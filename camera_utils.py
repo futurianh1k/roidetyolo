@@ -31,8 +31,16 @@ def detect_available_cameras(max_cameras=10):
     
     print(f"[Camera] 카메라 검색 중 (최대 {max_cameras}개)...")
     
+    # Linux 환경 감지
+    is_linux = platform.system() == 'Linux'
+    
     for camera_idx in range(max_cameras):
-        cap = cv2.VideoCapture(camera_idx)
+        # Linux에서는 V4L2 백엔드 명시
+        if is_linux:
+            cap = cv2.VideoCapture(camera_idx, cv2.CAP_V4L2)
+            print(f"[Camera] Linux 환경: /dev/video{camera_idx} 검색 중 (V4L2 백엔드)...")
+        else:
+            cap = cv2.VideoCapture(camera_idx)
         
         if cap.isOpened():
             # 카메라 정보 가져오기
@@ -40,28 +48,48 @@ def detect_available_cameras(max_cameras=10):
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS)
             
-            # 실제로 프레임을 읽을 수 있는지 확인
+            # FPS가 0이면 기본값 설정 및 경고 출력 제거
+            if fps <= 0:
+                fps = 30.0
+            
+            # 실제로 프레임을 읽을 수 있는지 확인 (타임아웃 추가)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 버퍼 크기 최소화
             ret, frame = cap.read()
             
             if ret and frame is not None:
+                backend = cap.getBackendName()
                 camera_info = {
                     'index': camera_idx,
                     'name': f'Camera {camera_idx}',
                     'resolution': (width, height),
-                    'fps': fps if fps > 0 else 30.0,
-                    'available': True
+                    'fps': fps,
+                    'available': True,
+                    'backend': backend
                 }
                 
                 available_cameras.append(camera_info)
-                print(f"[Camera] ✅ Camera {camera_idx} 발견: {width}x{height} @ {fps:.1f}fps")
+                print(f"[Camera] ✅ Camera {camera_idx} 발견: {width}x{height} @ {fps:.1f}fps (Backend: {backend})")
+            else:
+                print(f"[Camera] ⚠️ Camera {camera_idx} 열림 성공하나 프레임 읽기 실패")
             
             cap.release()
-        
-        # 카메라가 없으면 다음 번호 건너뛰기 (연속으로 2개 실패하면 종료)
-        if camera_idx > 0 and len(available_cameras) == 0:
-            break
+        else:
+            # 디버깅을 위한 상세 정보
+            if camera_idx < 3:  # 처음 3개만 자세히 출력
+                print(f"[Camera] ❌ Camera {camera_idx} 열기 실패")
     
     print(f"[Camera] 총 {len(available_cameras)}개의 카메라 발견")
+    
+    # Linux에서 카메라를 찾지 못한 경우 권한 체크
+    if is_linux and len(available_cameras) == 0:
+        print("\n[Camera] ⚠️ Linux에서 카메라를 찾지 못했습니다.")
+        print("[Camera] 다음을 확인해주세요:")
+        print("[Camera]   1. 카메라가 연결되어 있는지 확인: lsusb")
+        print("[Camera]   2. 비디오 장치 확인: ls -la /dev/video*")
+        print("[Camera]   3. 사용자 권한 확인: groups $USER")
+        print("[Camera]   4. 권한 추가: sudo usermod -aG video $USER")
+        print("[Camera]   5. v4l-utils 설치: sudo apt-get install v4l-utils")
+        print("[Camera]   6. 장치 정보 확인: v4l2-ctl --list-devices")
     
     return available_cameras
 
@@ -110,7 +138,11 @@ def test_camera(camera_index, duration=2):
     Returns:
         bool: 테스트 성공 여부
     """
-    cap = cv2.VideoCapture(camera_index)
+    # Linux에서는 V4L2 백엔드 사용
+    if platform.system() == 'Linux':
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+    else:
+        cap = cv2.VideoCapture(camera_index)
     
     if not cap.isOpened():
         print(f"[Camera] ❌ Camera {camera_index} 열기 실패")
@@ -149,7 +181,11 @@ def get_camera_frame(camera_index):
     Returns:
         numpy.ndarray: 프레임 또는 None
     """
-    cap = cv2.VideoCapture(camera_index)
+    # Linux에서는 V4L2 백엔드 사용
+    if platform.system() == 'Linux':
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+    else:
+        cap = cv2.VideoCapture(camera_index)
     
     if not cap.isOpened():
         return None

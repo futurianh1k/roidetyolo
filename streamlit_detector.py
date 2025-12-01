@@ -39,6 +39,10 @@ class StreamlitDetector:
         self.camera_source = config.get('camera_source', 0)
         self.cap = None
         
+        # Linux 환경 감지
+        import platform
+        self.is_linux = platform.system() == 'Linux'
+        
         # ROI별 상태 추적
         self.roi_states = {}
         for roi in roi_regions:
@@ -316,10 +320,18 @@ class StreamlitDetector:
         """검출 루프 실행"""
         print("[Detector] 검출 시작")
         
-        self.cap = cv2.VideoCapture(self.camera_source)
+        # Linux에서는 V4L2 백엔드 사용
+        if self.is_linux:
+            self.cap = cv2.VideoCapture(self.camera_source, cv2.CAP_V4L2)
+            print(f"[Detector] Linux 환경: V4L2 백엔드로 카메라 {self.camera_source} 열기")
+        else:
+            self.cap = cv2.VideoCapture(self.camera_source)
         
         if not self.cap.isOpened():
             print("[Detector] 카메라를 열 수 없습니다")
+            print(f"[Detector] 카메라 소스: {self.camera_source}")
+            if self.is_linux:
+                print("[Detector] 카메라 권한 및 /dev/video* 장치를 확인해주세요")
             return
         
         frame_count = 0

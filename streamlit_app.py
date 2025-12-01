@@ -62,7 +62,13 @@ def load_config():
     config_path = Path('config.json')
     if config_path.exists():
         with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config = json.load(f)
+            
+            # ROI 데이터 정규화 (rectangle → polygon 변환)
+            if 'roi_regions' in config:
+                config['roi_regions'] = [normalize_roi_format(roi) for roi in config['roi_regions']]
+            
+            return config
     else:
         # 기본 설정
         return {
@@ -94,6 +100,30 @@ def save_config(config):
     """config.json 파일 저장"""
     with open('config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def normalize_roi_format(roi):
+    """
+    ROI 데이터를 polygon 형식으로 정규화
+    - rectangle 형식 (x, y, width, height) → polygon 형식 (points)
+    - 이미 polygon 형식이면 그대로 반환
+    """
+    if 'points' in roi:
+        # 이미 polygon 형식
+        return roi
+    
+    # rectangle 형식 → polygon 변환
+    if 'x' in roi and 'y' in roi and 'width' in roi and 'height' in roi:
+        x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
+        roi['points'] = [
+            [x, y],           # 좌상단
+            [x + w, y],       # 우상단
+            [x + w, y + h],   # 우하단
+            [x, y + h]        # 좌하단
+        ]
+        roi['type'] = 'polygon'
+    
+    return roi
 
 
 def draw_polygon_on_frame(frame, points, color=(0, 255, 0), thickness=2):
@@ -478,8 +508,12 @@ with tab1:
         
         if len(st.session_state.roi_regions) > 0:
             for i, roi in enumerate(st.session_state.roi_regions):
+                # ROI 정규화 (안전성 체크)
+                roi = normalize_roi_format(roi)
+                st.session_state.roi_regions[i] = roi
+                
                 with st.expander(f"{roi['id']} ({len(roi['points'])}개 점)"):
-                    st.text(f"타입: {roi['type']}")
+                    st.text(f"타입: {roi.get('type', 'polygon')}")
                     st.text(f"설명: {roi.get('description', 'N/A')}")
                     
                     col_select, col_delete = st.columns(2)
