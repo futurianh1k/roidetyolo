@@ -1,0 +1,39 @@
+{
+  "yolo_model": "yolov8n.pt",
+  "camera_source": 0,
+  "frame_width": 1280,
+  "frame_height": 720,
+  "confidence_threshold": 0.5,
+  "presence_threshold_seconds": 5,
+  "absence_threshold_seconds": 3,
+  "count_interval_seconds": 1,
+  "api_endpoint": "http://10.10.11.23:10008/api/emergency",
+  "watch_id": "watch_1760663070591_8022",
+  "include_image_url": false,
+  "roi_regions": [
+    {
+      "id": "ROI1",
+      "x": 100,
+      "y": 100,
+      "width": 400,
+      "height": 300,
+      "description": "첫 번째 관심 영역"
+    },
+    {
+      "id": "ROI2",
+      "x": 600,
+      "y": 100,
+      "width": 400,
+      "height": 300,
+      "description": "두 번째 관심 영역"
+    },
+    {
+      "id": "ROI3",
+      "x": 350,
+      "y": 450,
+      "width": 400,
+      "height": 250,
+      "description": "세 번째 관심 영역"
+    }
+  ]
+}

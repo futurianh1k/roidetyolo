@@ -1,0 +1,17 @@
+# YOLO ROI Person Detector Requirements
+
+# YOLO 최신 버전 (YOLOv8/YOLOv11)
+ultralytics>=8.0.0
+
+# OpenCV for video processing
+opencv-python>=4.8.0
+
+# HTTP requests
+requests>=2.31.0
+
+# NumPy for array operations
+numpy>=1.24.0
+
+# Optional: PyTorch (자동으로 ultralytics와 함께 설치됨)
+# torch>=2.0.0
+# torchvision>=0.15.0

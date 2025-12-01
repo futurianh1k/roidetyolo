@@ -1,0 +1,51 @@
+{
+  "yolo_model": "yolov8n.pt",
+  "camera_source": 0,
+  "frame_width": 1280,
+  "frame_height": 720,
+  "confidence_threshold": 0.5,
+  "presence_threshold_seconds": 5,
+  "absence_threshold_seconds": 3,
+  "count_interval_seconds": 1,
+  "api_endpoint": "http://10.10.11.23:10008/api/emergency",
+  "watch_id": "watch_1760663070591_8022",
+  "include_image_url": false,
+  "roi_regions": [
+    {
+      "id": "ROI1",
+      "type": "polygon",
+      "points": [
+        [100, 150],
+        [300, 100],
+        [500, 150],
+        [450, 400],
+        [150, 400]
+      ],
+      "description": "복잡한 형태의 영역 1"
+    },
+    {
+      "id": "ROI2",
+      "type": "polygon",
+      "points": [
+        [600, 100],
+        [900, 100],
+        [900, 400],
+        [600, 400]
+      ],
+      "description": "사각형 형태 영역 (polygon으로 표현)"
+    },
+    {
+      "id": "ROI3",
+      "type": "polygon",
+      "points": [
+        [350, 450],
+        [550, 450],
+        [650, 550],
+        [600, 680],
+        [300, 680],
+        [250, 550]
+      ],
+      "description": "육각형 형태 영역"
+    }
+  ]
+}
