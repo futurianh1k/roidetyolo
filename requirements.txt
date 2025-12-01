@@ -12,6 +12,15 @@ requests>=2.31.0
 # NumPy for array operations
 numpy>=1.24.0
 
+# Streamlit for web UI
+streamlit>=1.28.0
+
+# Pillow for image processing
+Pillow>=10.0.0
+
 # Optional: PyTorch (자동으로 ultralytics와 함께 설치됨)
 # torch>=2.0.0
 # torchvision>=0.15.0
+
+# Optional: Flask for mock server
+flask>=2.0.0
