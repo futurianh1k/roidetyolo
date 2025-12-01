@@ -18,6 +18,10 @@ from ultralytics import YOLO
 import threading
 from collections import deque
 
+# 유틸리티 함수 임포트
+from camera_utils import detect_available_cameras, format_camera_list_for_ui, get_camera_frame
+from roi_utils import create_quadrant_rois, validate_roi, get_roi_center
+
 # 페이지 설정
 st.set_page_config(
     page_title="YOLO ROI Person Detector",
@@ -47,6 +51,10 @@ if 'api_endpoints' not in st.session_state:
     st.session_state.api_endpoints = []
 if 'test_api_response' not in st.session_state:
     st.session_state.test_api_response = None
+if 'available_cameras' not in st.session_state:
+    st.session_state.available_cameras = []
+if 'camera_detected' not in st.session_state:
+    st.session_state.camera_detected = False
 
 
 def load_config():
@@ -179,11 +187,51 @@ config['yolo_model'] = st.sidebar.selectbox(
 
 # 카메라 설정
 st.sidebar.subheader("📹 카메라")
+
+# 카메라 자동 검색 버튼
+if st.sidebar.button("🔍 카메라 자동 검색"):
+    with st.spinner('카메라 검색 중...'):
+        st.session_state.available_cameras = detect_available_cameras(max_cameras=5)
+        st.session_state.camera_detected = True
+    
+    if st.session_state.available_cameras:
+        st.sidebar.success(f"✅ {len(st.session_state.available_cameras)}개의 카메라 발견!")
+    else:
+        st.sidebar.error("❌ 사용 가능한 카메라를 찾지 못했습니다.")
+
+# 카메라 선택
 camera_type = st.sidebar.radio("소스 타입", ["웹캠", "비디오 파일"])
+
 if camera_type == "웹캠":
-    config['camera_source'] = st.sidebar.number_input("웹캠 번호", 0, 10, 0)
+    if st.session_state.available_cameras:
+        # 검색된 카메라 목록에서 선택
+        camera_options = format_camera_list_for_ui(st.session_state.available_cameras)
+        selected_camera_idx = st.sidebar.selectbox(
+            "카메라 선택",
+            range(len(camera_options)),
+            format_func=lambda x: camera_options[x]
+        )
+        config['camera_source'] = st.session_state.available_cameras[selected_camera_idx]['index']
+        
+        # 카메라 정보 표시
+        cam = st.session_state.available_cameras[selected_camera_idx]
+        st.sidebar.info(
+            f"**해상도**: {cam['resolution'][0]}x{cam['resolution'][1]}\n\n"
+            f"**FPS**: {cam['fps']:.0f}"
+        )
+    else:
+        # 카메라 번호 직접 입력
+        config['camera_source'] = st.sidebar.number_input(
+            "웹캠 번호",
+            0, 10, 
+            int(config.get('camera_source', 0))
+        )
+        st.sidebar.info("💡 '카메라 자동 검색' 버튼을 클릭하면 사용 가능한 카메라를 자동으로 찾습니다.")
 else:
-    config['camera_source'] = st.sidebar.text_input("비디오 파일 경로", "video.mp4")
+    config['camera_source'] = st.sidebar.text_input(
+        "비디오 파일 경로",
+        config.get('camera_source', 'video.mp4') if isinstance(config.get('camera_source'), str) else 'video.mp4'
+    )
 
 # 검출 임계값
 st.sidebar.subheader("🎯 검출 설정")
@@ -359,6 +407,26 @@ with tab1:
     
     with col2:
         st.subheader("🛠️ 편집 도구")
+        
+        # 4사분면 ROI 자동 생성 버튼
+        if st.button("🎯 4사분면 ROI 자동 생성", type="primary"):
+            if ret and frame is not None:
+                frame_height, frame_width = frame.shape[:2]
+                quadrant_rois = create_quadrant_rois(frame_width, frame_height, margin=20)
+                
+                # 기존 ROI 초기화 확인
+                if len(st.session_state.roi_regions) > 0:
+                    if st.checkbox("기존 ROI 초기화 후 생성", value=True, key="clear_before_quad"):
+                        st.session_state.roi_regions = []
+                
+                # 4사분면 ROI 추가
+                st.session_state.roi_regions.extend(quadrant_rois)
+                st.success(f"✅ 4사분면 ROI가 생성되었습니다! ({frame_width}x{frame_height})")
+                st.rerun()
+            else:
+                st.error("❌ 카메라 프레임을 가져올 수 없습니다.")
+        
+        st.markdown("---")
         
         # 현재 그리는 중인 polygon 정보
         if len(st.session_state.current_points) > 0:
