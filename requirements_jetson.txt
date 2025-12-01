@@ -1,0 +1,76 @@
+# YOLO ROI Person Detector - Jetson Orin Requirements
+# Jetpack 6.0 (Python 3.10) 전용
+
+# ==========================================
+# PyTorch (Jetson 전용 - 별도 설치 필요)
+# ==========================================
+# 직접 설치 명령:
+# pip install https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl
+
+# torchvision (Jetson 전용 - 별도 설치 필요)
+# pip install --no-deps torchvision==0.19.0
+
+# ==========================================
+# YOLO 및 컴퓨터 비전
+# ==========================================
+# Ultralytics YOLO (YOLOv8/YOLOv11)
+ultralytics==8.3.0
+
+# OpenCV는 Jetpack에 이미 포함되어 있으므로 설치하지 않음
+# Jetpack의 최적화된 OpenCV를 사용하는 것이 권장됨
+# opencv-python은 설치하지 않음!
+
+# ==========================================
+# 웹 프레임워크
+# ==========================================
+# Streamlit (웹 UI)
+streamlit==1.28.0
+
+# Flask (mock server용)
+flask==3.0.0
+
+# ==========================================
+# 데이터 처리
+# ==========================================
+# NumPy (Jetpack에 포함되어 있지만 버전 확인)
+numpy>=1.24.0,<2.0.0
+
+# Pillow (이미지 처리)
+Pillow==10.0.0
+
+# ==========================================
+# HTTP 및 네트워크
+# ==========================================
+# Requests (API 통신)
+requests==2.31.0
+
+# ==========================================
+# 유틸리티
+# ==========================================
+# PyYAML (설정 파일)
+PyYAML>=6.0
+
+# Tqdm (진행 표시줄)
+tqdm>=4.65.0
+
+# ==========================================
+# 선택적 패키지
+# ==========================================
+# pandas (데이터 분석 - 선택사항)
+# pandas>=2.0.0
+
+# matplotlib (시각화 - 선택사항)
+# matplotlib>=3.7.0
+
+# ==========================================
+# 주의사항
+# ==========================================
+# 1. PyTorch는 별도로 설치해야 합니다 (위의 pip install 명령 참고)
+# 2. OpenCV는 Jetpack의 기본 설치를 사용합니다
+# 3. CUDA, cuDNN은 Jetpack에 포함되어 있습니다
+# 4. TensorRT는 Jetpack에 포함되어 있습니다
+# 
+# 설치 순서:
+# 1. pip install <pytorch_wheel_url>
+# 2. pip install --no-deps torchvision==0.19.0
+# 3. pip install -r requirements_jetson.txt
