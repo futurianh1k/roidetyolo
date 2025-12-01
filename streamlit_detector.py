@@ -82,18 +82,38 @@ class StreamlitDetector:
     def send_event_to_api(self, roi_id, object_type, status):
         """API 엔드포인트로 이벤트 전송"""
         try:
+            # 이벤트 ID 생성
+            event_id = str(uuid.uuid4())
+            timestamp = datetime.now().isoformat()
+            
+            # 이미지 URL 생성 (설정에 따라)
+            image_url = None
+            if self.config.get('include_image_url', False):
+                image_base = self.config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
+                image_filename = f"emergency_{event_id.split('-')[0]}.jpeg"
+                image_url = f"{image_base}/{image_filename}"
+            
+            # FCM Message ID 생성
+            fcm_project = self.config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+            fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
+            
+            # 상태 결정 (1: present → SENT, 0: absent → SENT)
+            event_status = "SENT" if status == 1 else "SENT"
+            
+            # API 형식에 맞는 이벤트 데이터 구성
             event_data = {
-                "eventId": str(uuid.uuid4()),
-                "roiId": roi_id,
-                "objectType": object_type,
-                "status": status,
-                "createdAt": datetime.now().isoformat(),
-                "watchId": self.config.get('watch_id', 'watch_streamlit')
+                "eventId": event_id,
+                "fcmMessageId": fcm_message_id,
+                "imageUrl": image_url,
+                "status": event_status,
+                "createdAt": timestamp,
+                "watchId": self.config.get('watch_id', 'watch_1760663070591_8022')
             }
             
-            print(f"[API] 이벤트 전송: {roi_id}, {object_type}, {status}")
+            print(f"[API] 이벤트 전송: {roi_id}, {object_type}, status={status}")
+            print(f"[API] 데이터: {json.dumps(event_data, ensure_ascii=False)}")
             
-            # 이벤트 콜백
+            # 이벤트 콜백 (UI 로그용)
             if self.event_callback:
                 self.event_callback({
                     'timestamp': datetime.now().strftime('%H:%M:%S'),
@@ -102,23 +122,44 @@ class StreamlitDetector:
                     'data': event_data
                 })
             
-            # API 호출
-            api_endpoint = self.config.get('api_endpoint')
-            if api_endpoint:
-                response = requests.post(
-                    api_endpoint,
-                    json=event_data,
-                    headers={'Content-Type': 'application/json'},
-                    timeout=5
-                )
+            # 활성화된 API 엔드포인트들에 전송
+            api_endpoints = self.config.get('api_endpoints', [])
+            
+            if not api_endpoints:
+                print("[API] 등록된 API 엔드포인트가 없습니다")
+                return
+            
+            for endpoint in api_endpoints:
+                if not endpoint.get('enabled', False):
+                    continue
                 
-                if response.status_code in [200, 201]:
-                    print(f"[API] 전송 성공: {response.status_code}")
-                else:
-                    print(f"[API] 전송 실패: {response.status_code}")
+                api_url = endpoint.get('url')
+                api_method = endpoint.get('method', 'POST')
+                api_name = endpoint.get('name', 'API')
+                
+                try:
+                    response = requests.request(
+                        method=api_method,
+                        url=api_url,
+                        json=event_data,
+                        headers={'Content-Type': 'application/json'},
+                        timeout=5
+                    )
+                    
+                    if response.status_code in [200, 201]:
+                        print(f"[API] {api_name} 전송 성공: {response.status_code}")
+                    else:
+                        print(f"[API] {api_name} 전송 실패: {response.status_code} - {response.text}")
+                
+                except requests.exceptions.Timeout:
+                    print(f"[API] {api_name} 타임아웃")
+                except requests.exceptions.ConnectionError:
+                    print(f"[API] {api_name} 연결 오류")
+                except Exception as e:
+                    print(f"[API] {api_name} 오류: {e}")
         
         except Exception as e:
-            print(f"[API] 오류: {e}")
+            print(f"[API] 전체 오류: {e}")
     
     def update_roi_state(self, roi_id, person_detected):
         """ROI 상태 업데이트"""

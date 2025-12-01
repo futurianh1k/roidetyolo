@@ -43,6 +43,10 @@ if 'detection_stats' not in st.session_state:
     st.session_state.detection_stats = {}
 if 'selected_roi_idx' not in st.session_state:
     st.session_state.selected_roi_idx = None
+if 'api_endpoints' not in st.session_state:
+    st.session_state.api_endpoints = []
+if 'test_api_response' not in st.session_state:
+    st.session_state.test_api_response = None
 
 
 def load_config():
@@ -62,9 +66,18 @@ def load_config():
             "presence_threshold_seconds": 5,
             "absence_threshold_seconds": 3,
             "count_interval_seconds": 1,
-            "api_endpoint": "http://10.10.11.23:10008/api/emergency",
-            "watch_id": "watch_streamlit",
-            "include_image_url": False,
+            "api_endpoints": [
+                {
+                    "name": "Emergency Alert API",
+                    "url": "http://10.10.11.23:10008/api/emergency/quick",
+                    "enabled": True,
+                    "method": "POST"
+                }
+            ],
+            "watch_id": "watch_1760663070591_8022",
+            "include_image_url": True,
+            "image_base_url": "http://10.10.11.79:8080/api/images",
+            "fcm_project_id": "emergency-alert-system-f27e6",
             "roi_regions": []
         }
 
@@ -193,14 +206,88 @@ config['absence_threshold_seconds'] = st.sidebar.number_input(
 
 # API 설정
 st.sidebar.subheader("🌐 API 설정")
-config['api_endpoint'] = st.sidebar.text_input(
-    "API 엔드포인트",
-    config.get('api_endpoint', 'http://10.10.11.23:10008/api/emergency')
-)
+
+# Watch ID
 config['watch_id'] = st.sidebar.text_input(
     "Watch ID",
-    config.get('watch_id', 'watch_streamlit')
+    config.get('watch_id', 'watch_1760663070591_8022')
 )
+
+# 이미지 설정
+config['include_image_url'] = st.sidebar.checkbox(
+    "이미지 URL 포함",
+    config.get('include_image_url', True)
+)
+
+if config['include_image_url']:
+    config['image_base_url'] = st.sidebar.text_input(
+        "이미지 베이스 URL",
+        config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
+    )
+
+# FCM 설정
+config['fcm_project_id'] = st.sidebar.text_input(
+    "FCM Project ID",
+    config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+)
+
+st.sidebar.markdown("---")
+
+# API 엔드포인트 관리
+with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
+    # 저장된 API 엔드포인트 목록
+    if 'api_endpoints' not in config:
+        config['api_endpoints'] = []
+    
+    st.markdown("**등록된 API 엔드포인트**")
+    
+    for i, endpoint in enumerate(config['api_endpoints']):
+        col1, col2, col3 = st.columns([3, 1, 1])
+        
+        with col1:
+            st.text(endpoint.get('name', f'API {i+1}'))
+            st.caption(endpoint.get('url', ''))
+        
+        with col2:
+            enabled = st.checkbox(
+                "활성",
+                endpoint.get('enabled', True),
+                key=f"enabled_{i}",
+                label_visibility="collapsed"
+            )
+            config['api_endpoints'][i]['enabled'] = enabled
+        
+        with col3:
+            if st.button("🗑️", key=f"delete_api_{i}"):
+                config['api_endpoints'].pop(i)
+                st.rerun()
+        
+        st.markdown("---")
+    
+    # 새 API 추가
+    st.markdown("**새 API 추가**")
+    new_api_name = st.text_input("API 이름", "Emergency Alert API", key="new_api_name")
+    new_api_url = st.text_input(
+        "API URL",
+        "http://10.10.11.23:10008/api/emergency/quick",
+        key="new_api_url"
+    )
+    new_api_method = st.selectbox(
+        "HTTP Method",
+        ["POST", "PUT", "PATCH"],
+        key="new_api_method"
+    )
+    
+    if st.button("➕ API 추가"):
+        new_endpoint = {
+            "name": new_api_name,
+            "url": new_api_url,
+            "enabled": True,
+            "method": new_api_method
+        }
+        config['api_endpoints'].append(new_endpoint)
+        st.success(f"✅ {new_api_name} 추가됨!")
+        st.rerun()
 
 # 설정 저장 버튼
 if st.sidebar.button("💾 설정 저장", type="primary"):
@@ -212,7 +299,7 @@ if st.sidebar.button("💾 설정 저장", type="primary"):
 st.title("👤 YOLO ROI 사람 검출 시스템")
 
 # 탭 생성
-tab1, tab2, tab3 = st.tabs(["📐 ROI 편집", "🎥 실시간 검출", "📊 통계 & 로그"])
+tab1, tab2, tab3, tab4 = st.tabs(["📐 ROI 편집", "🎥 실시간 검출", "📊 통계 & 로그", "🔗 API 테스트"])
 
 # 탭 1: ROI 편집
 with tab1:
@@ -462,6 +549,171 @@ with tab3:
         if st.button("🧹 로그 초기화"):
             st.session_state.event_log.clear()
             st.rerun()
+
+# 탭 4: API 테스트
+with tab4:
+    st.header("API 엔드포인트 테스트")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("🔗 API 설정")
+        
+        # API 선택
+        if len(config.get('api_endpoints', [])) > 0:
+            api_options = [f"{ep['name']} ({ep['url']})" for ep in config['api_endpoints']]
+            selected_api_idx = st.selectbox(
+                "테스트할 API 선택",
+                range(len(api_options)),
+                format_func=lambda x: api_options[x]
+            )
+            
+            selected_api = config['api_endpoints'][selected_api_idx]
+            
+            st.info(f"**URL**: {selected_api['url']}")
+            st.info(f"**Method**: {selected_api['method']}")
+            
+            # 테스트 이벤트 데이터 생성
+            st.markdown("---")
+            st.subheader("📤 테스트 데이터")
+            
+            test_roi_id = st.text_input("ROI ID", "ROI1")
+            test_status = st.selectbox("Status", ["SENT", "PENDING", "FAILED"])
+            
+            # 테스트 버튼
+            if st.button("🚀 API 테스트 실행", type="primary"):
+                try:
+                    # 이벤트 데이터 생성
+                    event_id = str(uuid.uuid4())
+                    timestamp = datetime.now().isoformat()
+                    
+                    # 이미지 URL 생성 (테스트용)
+                    image_url = None
+                    if config.get('include_image_url', False):
+                        image_base = config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
+                        image_filename = f"emergency_{event_id.split('-')[0]}.jpeg"
+                        image_url = f"{image_base}/{image_filename}"
+                    
+                    # FCM Message ID 생성
+                    fcm_project = config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+                    fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
+                    
+                    event_data = {
+                        "eventId": event_id,
+                        "fcmMessageId": fcm_message_id,
+                        "imageUrl": image_url,
+                        "status": test_status,
+                        "createdAt": timestamp,
+                        "watchId": config.get('watch_id', 'watch_streamlit')
+                    }
+                    
+                    # API 호출
+                    with st.spinner('API 호출 중...'):
+                        response = requests.request(
+                            method=selected_api['method'],
+                            url=selected_api['url'],
+                            json=event_data,
+                            headers={'Content-Type': 'application/json'},
+                            timeout=10
+                        )
+                    
+                    # 결과 저장
+                    st.session_state.test_api_response = {
+                        'status_code': response.status_code,
+                        'response_text': response.text,
+                        'request_data': event_data,
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    
+                    if response.status_code in [200, 201]:
+                        st.success(f"✅ API 호출 성공! (Status: {response.status_code})")
+                    else:
+                        st.error(f"⚠️ API 호출 실패 (Status: {response.status_code})")
+                
+                except requests.exceptions.Timeout:
+                    st.error("❌ 타임아웃: API 응답이 없습니다.")
+                    st.session_state.test_api_response = {
+                        'error': 'Timeout',
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ 연결 오류: API 서버에 연결할 수 없습니다.")
+                    st.session_state.test_api_response = {
+                        'error': 'Connection Error',
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                
+                except Exception as e:
+                    st.error(f"❌ 오류 발생: {str(e)}")
+                    st.session_state.test_api_response = {
+                        'error': str(e),
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+        
+        else:
+            st.warning("⚠️ 등록된 API 엔드포인트가 없습니다. 사이드바에서 API를 추가해주세요.")
+    
+    with col2:
+        st.subheader("📋 테스트 결과")
+        
+        if st.session_state.test_api_response:
+            result = st.session_state.test_api_response
+            
+            st.markdown(f"**테스트 시간**: {result.get('timestamp', 'N/A')}")
+            st.markdown("---")
+            
+            if 'error' in result:
+                st.error(f"**오류**: {result['error']}")
+            else:
+                # 상태 코드
+                status_code = result.get('status_code', 0)
+                if status_code in [200, 201]:
+                    st.success(f"**상태 코드**: {status_code} ✅")
+                else:
+                    st.error(f"**상태 코드**: {status_code} ❌")
+                
+                # 요청 데이터
+                with st.expander("📤 요청 데이터", expanded=True):
+                    st.json(result.get('request_data', {}))
+                
+                # 응답 데이터
+                with st.expander("📥 응답 데이터", expanded=True):
+                    response_text = result.get('response_text', '')
+                    try:
+                        # JSON 파싱 시도
+                        response_json = json.loads(response_text)
+                        st.json(response_json)
+                    except:
+                        # JSON이 아니면 텍스트로 표시
+                        st.text(response_text)
+        else:
+            st.info("아직 테스트를 실행하지 않았습니다.")
+    
+    # 사용 예시
+    st.markdown("---")
+    st.subheader("💡 API 이벤트 형식")
+    
+    with st.expander("이벤트 데이터 구조"):
+        example_event = {
+            "eventId": "fc4d54d0-717c-4fe8-95be-fdf8f188a401",
+            "fcmMessageId": "projects/emergency-alert-system-f27e6/messages/1234567890",
+            "imageUrl": "http://10.10.11.79:8080/api/images/emergency_2cd5e9eb.jpeg",
+            "status": "SENT",
+            "createdAt": "2025-10-17T10:30:00",
+            "watchId": "watch_1760663070591_8022"
+        }
+        st.json(example_event)
+        
+        st.markdown("""
+        **필드 설명**:
+        - `eventId`: 이벤트 고유 ID (UUID)
+        - `fcmMessageId`: Firebase Cloud Messaging ID
+        - `imageUrl`: 이벤트 관련 이미지 URL (선택적)
+        - `status`: 이벤트 상태 (SENT, PENDING, FAILED)
+        - `createdAt`: 이벤트 생성 시간 (ISO 8601)
+        - `watchId`: Watch 고유 식별자
+        """)
 
 # 푸터
 st.markdown("---")
