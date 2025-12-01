@@ -80,6 +80,7 @@ def load_config():
             "frame_width": 1280,
             "frame_height": 720,
             "confidence_threshold": 0.5,
+            "detection_interval_seconds": 1.0,
             "presence_threshold_seconds": 5,
             "absence_threshold_seconds": 3,
             "count_interval_seconds": 1,
@@ -268,6 +269,14 @@ else:
 
 # 검출 임계값
 st.sidebar.subheader("🎯 검출 설정")
+config['detection_interval_seconds'] = st.sidebar.select_slider(
+    "🔄 YOLO 검출 간격 (초)",
+    options=[0.5, 1.0, 2.0, 3.0, 5.0],
+    value=float(config.get('detection_interval_seconds', 1.0)),
+    help="YOLO 추론을 실행하는 간격입니다. 간격을 늘리면 CPU/GPU 사용량이 줄어듭니다."
+)
+st.sidebar.caption(f"💡 {config['detection_interval_seconds']}초마다 사람 검출")
+
 config['confidence_threshold'] = st.sidebar.slider(
     "신뢰도 임계값",
     0.0, 1.0, 

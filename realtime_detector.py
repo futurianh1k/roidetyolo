@@ -59,6 +59,11 @@ class RealtimeDetector:
         self.confidence_threshold = config.get('confidence_threshold', 0.5)
         self.person_class_id = 0  # COCO dataset person class
         
+        # 검출 간격 설정 (초 단위)
+        self.detection_interval = config.get('detection_interval_seconds', 1.0)  # 기본 1초
+        self.last_detection_time = 0
+        self.last_detections = []  # 마지막 검출 결과 저장
+        
         # 스레드 제어
         self.running = False
         self.thread = None
@@ -206,53 +211,69 @@ class RealtimeDetector:
             cv2.putText(frame_copy, f'Person {conf:.2f}', (x1, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         
-        # FPS 표시
-        cv2.putText(frame_copy, f'FPS: {self.fps:.1f}', (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # FPS 및 검출 간격 표시
+        cv2.putText(frame_copy, f'Display FPS: {self.fps:.1f}', (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame_copy, f'YOLO: Every {self.detection_interval}s', (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
         return frame_copy
     
     def process_frame(self):
-        """단일 프레임 처리"""
+        """단일 프레임 처리 (YOLO 추론은 설정된 간격마다만 수행)"""
         ret, frame = self.cap.read()
         if not ret:
             return None
         
-        # YOLO 추론
-        results = self.model(frame, verbose=False)
-        
-        # 검출된 사람들
+        current_time = time.time()
         detections = []
         
-        # 각 ROI 확인
-        for roi in self.roi_regions:
-            roi_id = roi['id']
-            person_in_roi = False
+        # YOLO 추론을 설정된 간격(기본 1초)마다만 수행
+        if current_time - self.last_detection_time >= self.detection_interval:
+            print(f"[RealtimeDetector] YOLO 추론 실행 (간격: {self.detection_interval}초)")
             
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    cls = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    
-                    if cls == self.person_class_id and conf >= self.confidence_threshold:
-                        bbox = box.xyxy[0].cpu().numpy()
-                        
-                        detections.append({
-                            'bbox': bbox,
-                            'confidence': conf
-                        })
-                        
-                        if self.is_person_in_polygon_roi(bbox, roi):
-                            person_in_roi = True
+            # YOLO 추론
+            results = self.model(frame, verbose=False)
             
-            # ROI 상태 업데이트
-            self.update_roi_state(roi_id, person_in_roi)
+            # 검출된 사람들
+            detections = []
+            
+            # 각 ROI 확인
+            for roi in self.roi_regions:
+                roi_id = roi['id']
+                person_in_roi = False
+                
+                for result in results:
+                    boxes = result.boxes
+                    for box in boxes:
+                        cls = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        
+                        if cls == self.person_class_id and conf >= self.confidence_threshold:
+                            bbox = box.xyxy[0].cpu().numpy()
+                            
+                            detections.append({
+                                'bbox': bbox,
+                                'confidence': conf
+                            })
+                            
+                            if self.is_person_in_polygon_roi(bbox, roi):
+                                person_in_roi = True
+                
+                # ROI 상태 업데이트
+                self.update_roi_state(roi_id, person_in_roi)
+            
+            # 검출 결과 저장 (다음 프레임들에서 재사용)
+            self.last_detections = detections
+            self.last_detection_time = current_time
+        else:
+            # 이전 검출 결과 재사용 (YOLO 추론 생략)
+            detections = self.last_detections
         
-        # 시각화
+        # 시각화 (매 프레임마다 수행 - 부드러운 영상)
         annotated_frame = self.draw_rois_and_detections(frame, detections)
         
-        # FPS 계산
+        # FPS 계산 (화면 FPS)
         self.frame_count += 1
         elapsed_time = time.time() - self.fps_start_time
         if elapsed_time > 1.0:
