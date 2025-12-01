@@ -21,6 +21,7 @@ from collections import deque
 # 유틸리티 함수 임포트
 from camera_utils import detect_available_cameras, format_camera_list_for_ui, get_camera_frame
 from roi_utils import create_quadrant_rois, validate_roi, get_roi_center
+from realtime_detector import RealtimeDetector
 
 # 페이지 설정
 st.set_page_config(
@@ -55,6 +56,8 @@ if 'available_cameras' not in st.session_state:
     st.session_state.available_cameras = []
 if 'camera_detected' not in st.session_state:
     st.session_state.camera_detected = False
+if 'detector' not in st.session_state:
+    st.session_state.detector = None
 
 
 def load_config():
@@ -558,22 +561,62 @@ with tab2:
         
         # 검출 화면 표시 영역
         if st.session_state.detection_running:
-            st.info("🎥 검출 실행 중... (실제 구현 시 실시간 스트리밍)")
+            # 검출기 초기화 (처음 시작할 때만)
+            if st.session_state.detector is None:
+                st.info("🔄 검출기 초기화 중...")
+                try:
+                    st.session_state.detector = RealtimeDetector(config, st.session_state.roi_regions)
+                    st.session_state.detector.start()
+                    time.sleep(0.5)  # 검출기 시작 대기
+                except Exception as e:
+                    st.error(f"❌ 검출기 초기화 실패: {e}")
+                    st.session_state.detection_running = False
+                    st.rerun()
             
-            # 실시간 검출은 별도 스레드나 프로세스로 구현 필요
-            # 여기서는 placeholder로 표시
+            st.success("🎥 실시간 검출 실행 중 (백그라운드 스레드)")
+            
+            # 비디오 플레이스홀더
             video_placeholder = st.empty()
+            fps_placeholder = st.empty()
             
-            # 샘플 프레임 표시 (실제로는 실시간 스트림)
-            cap = cv2.VideoCapture(config['camera_source'])
-            ret, frame = cap.read()
-            cap.release()
-            
-            if ret:
-                frame = draw_all_rois(frame, st.session_state.roi_regions)
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                video_placeholder.image(frame_rgb, use_container_width=True)
+            # 실시간 프레임 업데이트 루프
+            while st.session_state.detection_running:
+                # 최신 프레임 가져오기
+                frame = st.session_state.detector.get_latest_frame()
+                
+                if frame is not None:
+                    # BGR -> RGB 변환
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    video_placeholder.image(frame_rgb, use_container_width=True)
+                    
+                    # FPS 정보
+                    fps_placeholder.caption(f"FPS: {st.session_state.detector.fps:.1f}")
+                
+                # 최신 통계 업데이트
+                stats_updates = st.session_state.detector.get_latest_stats()
+                for stat in stats_updates:
+                    roi_id = stat['roi_id']
+                    st.session_state.detection_stats[roi_id] = {
+                        'status': stat['status'],
+                        'count': stat['count'],
+                        'last_update': datetime.now()
+                    }
+                
+                # 최신 이벤트 로그 추가
+                events = st.session_state.detector.get_latest_events()
+                for event in events:
+                    st.session_state.event_log.append(event)
+                
+                # UI 업데이트 주기 (0.033초 = 약 30fps)
+                time.sleep(0.033)
+                
+                # Streamlit 자동 새로고침 방지 (프레임만 업데이트)
         else:
+            # 검출 중지 시 검출기 정리
+            if st.session_state.detector is not None:
+                st.session_state.detector.stop()
+                st.session_state.detector = None
+            
             st.info("▶️ '검출 시작' 버튼을 눌러 검출을 시작하세요.")
     
     with col2:
