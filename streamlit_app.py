@@ -426,7 +426,7 @@ with tab1:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             # 이미지 표시 (클릭 가능하도록)
-            st.image(frame_rgb, use_container_width=True)
+            st.image(frame_rgb, width='stretch')
             
             # 좌표 입력 UI
             st.markdown("---")
@@ -596,7 +596,7 @@ with tab2:
                 if frame is not None:
                     # BGR -> RGB 변환
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    video_placeholder.image(frame_rgb, use_container_width=True)
+                    video_placeholder.image(frame_rgb, width='stretch')
                     
                     # FPS 정보
                     fps_placeholder.caption(f"FPS: {st.session_state.detector.fps:.1f}")

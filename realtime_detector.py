@@ -232,8 +232,16 @@ class RealtimeDetector:
         if current_time - self.last_detection_time >= self.detection_interval:
             print(f"[RealtimeDetector] YOLO 추론 실행 (간격: {self.detection_interval}초)")
             
-            # YOLO 추론
-            results = self.model(frame, verbose=False)
+            # YOLO 추론 (NumPy 호환성 개선)
+            try:
+                # NumPy 배열을 명시적으로 contiguous하게 변환
+                frame_input = np.ascontiguousarray(frame)
+                results = self.model(frame_input, verbose=False)
+            except RuntimeError as e:
+                print(f"[RealtimeDetector] ⚠️  YOLO 추론 실패: {e}")
+                # 프레임을 복사하여 재시도
+                frame_input = frame.copy()
+                results = self.model(frame_input, verbose=False)
             
             # 검출된 사람들
             detections = []
@@ -250,7 +258,11 @@ class RealtimeDetector:
                         conf = float(box.conf[0])
                         
                         if cls == self.person_class_id and conf >= self.confidence_threshold:
-                            bbox = box.xyxy[0].cpu().numpy()
+                            # NumPy 변환 안전성 개선
+                            try:
+                                bbox = box.xyxy[0].cpu().numpy()
+                            except:
+                                bbox = np.array(box.xyxy[0].cpu())
                             
                             detections.append({
                                 'bbox': bbox,
