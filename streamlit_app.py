@@ -84,6 +84,8 @@ def load_config():
             "presence_threshold_seconds": 5,
             "absence_threshold_seconds": 3,
             "count_interval_seconds": 1,
+            "enable_face_analysis": False,
+            "face_analysis_roi_only": True,
             "api_endpoints": [
                 {
                     "name": "Emergency Alert API",
@@ -293,6 +295,27 @@ config['absence_threshold_seconds'] = st.sidebar.number_input(
     1, 60,
     int(config.get('absence_threshold_seconds', 3))
 )
+
+# 얼굴 분석 설정
+st.sidebar.subheader("😊 얼굴 분석")
+config['enable_face_analysis'] = st.sidebar.checkbox(
+    "얼굴 분석 활성화",
+    config.get('enable_face_analysis', False),
+    help="MediaPipe Face Mesh를 사용한 실시간 얼굴 분석 (눈/입 상태, 표정, 호흡기)"
+)
+
+if config['enable_face_analysis']:
+    config['face_analysis_roi_only'] = st.sidebar.checkbox(
+        "ROI 내부만 분석",
+        config.get('face_analysis_roi_only', True),
+        help="체크하면 ROI 영역 내 사람만 얼굴 분석을 수행합니다."
+    )
+    
+    st.sidebar.info("📊 분석 항목:\n- 👁️ 눈 개폐 (EAR)\n- 👄 입 상태 (MAR)\n- 😊 표정 분석\n- 😷 호흡기 검출")
+else:
+    config['face_analysis_roi_only'] = config.get('face_analysis_roi_only', True)
+
+st.sidebar.markdown("---")
 
 # API 설정
 st.sidebar.subheader("🌐 API 설정")

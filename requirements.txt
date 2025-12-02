@@ -24,3 +24,6 @@ Pillow>=10.0.0
 
 # Optional: Flask for mock server
 flask>=2.0.0
+
+# Face Analysis (MediaPipe)
+mediapipe>=0.10.0

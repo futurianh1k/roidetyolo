@@ -1,6 +1,7 @@
 """
 실시간 YOLO 검출 엔진 (백그라운드 스레드)
 Streamlit UI와 독립적으로 실행되는 검출 시스템
+얼굴 분석 기능 통합 (MediaPipe Face Mesh)
 """
 
 import cv2
@@ -11,6 +12,15 @@ import queue
 from datetime import datetime
 from ultralytics import YOLO
 import platform
+
+# 얼굴 분석기 임포트 (선택적)
+try:
+    from face_analyzer import FaceAnalyzer
+    FACE_ANALYZER_AVAILABLE = True
+    print("[RealtimeDetector] ✅ FaceAnalyzer 모듈 로드 완료")
+except ImportError:
+    FACE_ANALYZER_AVAILABLE = False
+    print("[RealtimeDetector] ⚠️  FaceAnalyzer 모듈 없음 - 얼굴 분석 비활성화")
 
 
 class RealtimeDetector:
@@ -63,6 +73,23 @@ class RealtimeDetector:
         self.detection_interval = config.get('detection_interval_seconds', 1.0)  # 기본 1초
         self.last_detection_time = 0
         self.last_detections = []  # 마지막 검출 결과 저장
+        
+        # 얼굴 분석 설정
+        self.enable_face_analysis = config.get('enable_face_analysis', False)
+        self.face_analysis_roi_only = config.get('face_analysis_roi_only', True)
+        self.face_analyzer = None
+        self.last_face_results = {}  # 마지막 얼굴 분석 결과 저장
+        
+        if self.enable_face_analysis and FACE_ANALYZER_AVAILABLE:
+            try:
+                self.face_analyzer = FaceAnalyzer()
+                print("[RealtimeDetector] ✅ FaceAnalyzer 초기화 완료")
+            except Exception as e:
+                print(f"[RealtimeDetector] ⚠️  FaceAnalyzer 초기화 실패: {e}")
+                self.enable_face_analysis = False
+        elif self.enable_face_analysis and not FACE_ANALYZER_AVAILABLE:
+            print("[RealtimeDetector] ⚠️  FaceAnalyzer 모듈 없음 - 얼굴 분석 비활성화")
+            self.enable_face_analysis = False
         
         # 스레드 제어
         self.running = False
@@ -159,7 +186,7 @@ class RealtimeDetector:
             pass  # 큐가 가득 차면 무시
     
     def draw_rois_and_detections(self, frame, detections):
-        """프레임에 ROI와 검출 결과 그리기"""
+        """프레임에 ROI와 검출 결과 그리기 (얼굴 분석 결과 포함)"""
         frame_copy = frame.copy()
         
         # ROI 그리기
@@ -202,20 +229,66 @@ class RealtimeDetector:
                     cv2.putText(frame_copy, count_text, (cx - 30, cy + 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 2)
         
-        # 검출된 사람 바운딩 박스
+        # 검출된 사람 바운딩 박스 + 얼굴 분석 결과
         for detection in detections:
             x1, y1, x2, y2 = map(int, detection['bbox'])
             conf = detection['confidence']
             
+            # 사람 BBox
             cv2.rectangle(frame_copy, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame_copy, f'Person {conf:.2f}', (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            
+            # 얼굴 분석 결과 표시
+            face_result = self.last_face_results.get(tuple(detection['bbox']))
+            
+            if face_result and face_result.get('face_detected'):
+                # 텍스트 준비
+                info_lines = [
+                    f"Person {conf:.2f}",
+                    f"Eyes: {'Open' if face_result['eyes_open'] else 'Closed'}",
+                    f"Mouth: {face_result['mouth_state']}",
+                    f"Expr: {face_result['expression']}",
+                ]
+                
+                if face_result.get('has_ventilator'):
+                    info_lines.append(f"Ventilator: Yes ({face_result['ventilator_confidence']:.2f})")
+                
+                # 텍스트 배경 및 표시
+                text_y = y1 - 10
+                for i, line in enumerate(info_lines):
+                    text_y_pos = text_y - (len(info_lines) - i - 1) * 20
+                    
+                    # 배경 사각형
+                    (text_width, text_height), _ = cv2.getTextSize(
+                        line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
+                    )
+                    cv2.rectangle(
+                        frame_copy, 
+                        (x1, text_y_pos - text_height - 2), 
+                        (x1 + text_width + 5, text_y_pos + 2),
+                        (0, 0, 0), -1
+                    )
+                    
+                    # 텍스트
+                    cv2.putText(
+                        frame_copy, line, (x1, text_y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2
+                    )
+            else:
+                # 얼굴 분석 없을 때는 기본 표시
+                cv2.putText(frame_copy, f'Person {conf:.2f}', (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         
         # FPS 및 검출 간격 표시
         cv2.putText(frame_copy, f'Display FPS: {self.fps:.1f}', (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv2.putText(frame_copy, f'YOLO: Every {self.detection_interval}s', (10, 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        
+        # 얼굴 분석 활성화 표시
+        if self.enable_face_analysis:
+            mode_text = "Face: ON (ROI Only)" if self.face_analysis_roi_only else "Face: ON (All)"
+            cv2.putText(frame_copy, mode_text, (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
         
         return frame_copy
     
@@ -271,6 +344,37 @@ class RealtimeDetector:
                             
                             if self.is_person_in_polygon_roi(bbox, roi):
                                 person_in_roi = True
+            
+            # 얼굴 분석 (옵션)
+            face_analysis_results = {}
+            if self.enable_face_analysis and self.face_analyzer:
+                print(f"[RealtimeDetector] 얼굴 분석 실행 ({len(detections)}명 검출)")
+                
+                for detection in detections:
+                    bbox = detection['bbox']
+                    
+                    # ROI 내부 사람만 분석 옵션
+                    if self.face_analysis_roi_only:
+                        person_in_any_roi = False
+                        for roi in self.roi_regions:
+                            if self.is_person_in_polygon_roi(bbox, roi):
+                                person_in_any_roi = True
+                                break
+                        
+                        if not person_in_any_roi:
+                            continue  # ROI 밖이면 건너뛰기
+                    
+                    # 얼굴 분석 수행
+                    try:
+                        face_result = self.face_analyzer.analyze_face(frame, bbox)
+                        if face_result:
+                            face_analysis_results[tuple(bbox)] = face_result
+                            print(f"[RealtimeDetector] 얼굴 분석 완료: Eyes={'Open' if face_result['eyes_open'] else 'Closed'}, Mouth={face_result['mouth_state']}")
+                    except Exception as e:
+                        print(f"[RealtimeDetector] ⚠️  얼굴 분석 실패: {e}")
+            
+            # 얼굴 분석 결과 저장
+            self.last_face_results = face_analysis_results
                 
                 # ROI 상태 업데이트
                 self.update_roi_state(roi_id, person_in_roi)
