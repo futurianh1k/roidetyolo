@@ -27,3 +27,6 @@ flask>=2.0.0
 
 # Face Analysis (MediaPipe)
 mediapipe>=0.10.0
+
+# Interactive Image Coordinates (for custom ROI drawing)
+streamlit-image-coordinates>=0.1.0

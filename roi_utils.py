@@ -7,6 +7,50 @@ ROI 유틸리티 함수
 import numpy as np
 
 
+def create_left_right_rois(frame_width, frame_height, margin=20):
+    """
+    화면을 좌/우 2등분하여 ROI 생성
+    
+    Args:
+        frame_width: 프레임 너비
+        frame_height: 프레임 높이
+        margin: 중앙 여백 (픽셀)
+    
+    Returns:
+        list: 2개의 ROI 정보 리스트
+    """
+    # 중앙점 계산
+    center_x = frame_width // 2
+    
+    # 좌/우 2분할 ROI 생성
+    rois = [
+        {
+            'id': 'ROI_LEFT',
+            'type': 'polygon',
+            'points': [
+                [margin, margin],                           # 좌상단
+                [center_x - margin, margin],                # 우상단
+                [center_x - margin, frame_height - margin], # 우하단
+                [margin, frame_height - margin]             # 좌하단
+            ],
+            'description': '좌측 영역'
+        },
+        {
+            'id': 'ROI_RIGHT',
+            'type': 'polygon',
+            'points': [
+                [center_x + margin, margin],                # 좌상단
+                [frame_width - margin, margin],             # 우상단
+                [frame_width - margin, frame_height - margin], # 우하단
+                [center_x + margin, frame_height - margin]  # 좌하단
+            ],
+            'description': '우측 영역'
+        }
+    ]
+    
+    return rois
+
+
 def create_quadrant_rois(frame_width, frame_height, margin=20):
     """
     화면을 4등분하여 4사분면 ROI 생성

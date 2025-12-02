@@ -18,9 +18,17 @@ from ultralytics import YOLO
 import threading
 from collections import deque
 
+# 이미지 좌표 클릭 라이브러리 (선택적)
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+    IMAGE_COORDINATES_AVAILABLE = True
+except ImportError:
+    IMAGE_COORDINATES_AVAILABLE = False
+    print("[Streamlit] ⚠️  streamlit-image-coordinates 없음 - 수동 좌표 입력 사용")
+
 # 유틸리티 함수 임포트
 from camera_utils import detect_available_cameras, format_camera_list_for_ui, get_camera_frame
-from roi_utils import create_quadrant_rois, validate_roi, get_roi_center
+from roi_utils import create_quadrant_rois, create_left_right_rois, validate_roi, get_roi_center
 from realtime_detector import RealtimeDetector
 
 # 페이지 설정
@@ -58,6 +66,10 @@ if 'camera_detected' not in st.session_state:
     st.session_state.camera_detected = False
 if 'detector' not in st.session_state:
     st.session_state.detector = None
+if 'custom_roi_mode' not in st.session_state:
+    st.session_state.custom_roi_mode = False
+if 'custom_roi_image' not in st.session_state:
+    st.session_state.custom_roi_image = None
 
 
 def load_config():
@@ -448,8 +460,31 @@ with tab1:
             # BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # 이미지 표시 (클릭 가능하도록)
-            st.image(frame_rgb, width='stretch')
+            # 커스텀 ROI 모드 체크
+            if st.session_state.custom_roi_mode and IMAGE_COORDINATES_AVAILABLE:
+                # 클릭 가능한 이미지 표시
+                st.info("🖱️ **커스텀 ROI 모드**: 이미지를 클릭하여 다각형 점을 추가하세요!")
+                
+                value = streamlit_image_coordinates(
+                    frame_rgb,
+                    key="image_click"
+                )
+                
+                # 클릭 이벤트 처리
+                if value is not None and value.get("x") is not None:
+                    clicked_x = int(value["x"])
+                    clicked_y = int(value["y"])
+                    
+                    # 클릭한 점 추가
+                    st.session_state.current_points.append([clicked_x, clicked_y])
+                    st.success(f"✅ 점 추가됨: ({clicked_x}, {clicked_y})")
+                    st.rerun()
+            else:
+                # 일반 이미지 표시
+                st.image(frame_rgb, width='stretch')
+                
+                if st.session_state.custom_roi_mode and not IMAGE_COORDINATES_AVAILABLE:
+                    st.warning("⚠️ 마우스 클릭 기능을 사용하려면 `pip install streamlit-image-coordinates`를 실행하세요.")
             
             # 좌표 입력 UI
             st.markdown("---")
@@ -473,23 +508,67 @@ with tab1:
     with col2:
         st.subheader("🛠️ 편집 도구")
         
-        # 4사분면 ROI 자동 생성 버튼
-        if st.button("🎯 4사분면 ROI 자동 생성", type="primary"):
-            if ret and frame is not None:
-                frame_height, frame_width = frame.shape[:2]
-                quadrant_rois = create_quadrant_rois(frame_width, frame_height, margin=20)
-                
-                # 기존 ROI 초기화 확인
-                if len(st.session_state.roi_regions) > 0:
-                    if st.checkbox("기존 ROI 초기화 후 생성", value=True, key="clear_before_quad"):
-                        st.session_state.roi_regions = []
-                
-                # 4사분면 ROI 추가
-                st.session_state.roi_regions.extend(quadrant_rois)
-                st.success(f"✅ 4사분면 ROI가 생성되었습니다! ({frame_width}x{frame_height})")
+        # ROI 자동 생성 옵션
+        st.markdown("**📐 자동 ROI 생성**")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            # 좌/우 2분할 ROI 자동 생성 버튼
+            if st.button("⬅️➡️ 좌/우 2분할", use_container_width=True):
+                if ret and frame is not None:
+                    frame_height, frame_width = frame.shape[:2]
+                    lr_rois = create_left_right_rois(frame_width, frame_height, margin=20)
+                    
+                    # 기존 ROI 초기화
+                    st.session_state.roi_regions = []
+                    
+                    # 좌/우 ROI 추가
+                    st.session_state.roi_regions.extend(lr_rois)
+                    st.success(f"✅ 좌/우 2분할 ROI 생성! ({frame_width}x{frame_height})")
+                    st.rerun()
+                else:
+                    st.error("❌ 카메라 프레임을 가져올 수 없습니다.")
+        
+        with col_btn2:
+            # 4사분면 ROI 자동 생성 버튼
+            if st.button("🎯 4사분면", use_container_width=True):
+                if ret and frame is not None:
+                    frame_height, frame_width = frame.shape[:2]
+                    quadrant_rois = create_quadrant_rois(frame_width, frame_height, margin=20)
+                    
+                    # 기존 ROI 초기화
+                    st.session_state.roi_regions = []
+                    
+                    # 4사분면 ROI 추가
+                    st.session_state.roi_regions.extend(quadrant_rois)
+                    st.success(f"✅ 4사분면 ROI 생성! ({frame_width}x{frame_height})")
+                    st.rerun()
+                else:
+                    st.error("❌ 카메라 프레임을 가져올 수 없습니다.")
+        
+        st.markdown("---")
+        
+        # 커스텀 ROI 설정 버튼
+        st.markdown("**✏️ 커스텀 ROI 설정**")
+        
+        if not st.session_state.custom_roi_mode:
+            if st.button("🖱️ 마우스로 ROI 그리기", type="primary", use_container_width=True):
+                st.session_state.custom_roi_mode = True
+                st.session_state.custom_roi_image = frame_rgb.copy() if ret else None
                 st.rerun()
+        else:
+            st.success("✅ 커스텀 ROI 모드 활성화!")
+            
+            if IMAGE_COORDINATES_AVAILABLE:
+                st.info("🖱️ **사용 방법**:\n1. 왼쪽 이미지를 클릭하여 점 추가\n2. 최소 3개 점 추가\n3. ROI ID 입력 후 저장")
             else:
-                st.error("❌ 카메라 프레임을 가져올 수 없습니다.")
+                st.warning("📝 수동 좌표 입력 모드")
+            
+            if st.button("❌ 커스텀 ROI 모드 종료", type="secondary", use_container_width=True):
+                st.session_state.custom_roi_mode = False
+                st.session_state.custom_roi_image = None
+                st.rerun()
         
         st.markdown("---")
         
