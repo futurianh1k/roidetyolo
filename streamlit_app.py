@@ -505,8 +505,9 @@ with tab1:
                     st.success(f"✅ 점 추가됨: ({clicked_x}, {clicked_y})")
                     st.rerun()
             else:
-                # 일반 이미지 표시
-                st.image(frame_rgb, width='stretch')
+                # 일반 이미지 표시 (PIL Image로 변환하여 미디어 오류 방지)
+                pil_image_roi = Image.fromarray(frame_rgb)
+                st.image(pil_image_roi, width='stretch')
                 
                 if st.session_state.custom_roi_mode and not IMAGE_COORDINATES_AVAILABLE:
                     st.warning("⚠️ 마우스 클릭 기능을 사용하려면 `pip install streamlit-image-coordinates`를 실행하세요.")

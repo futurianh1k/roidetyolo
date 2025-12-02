@@ -12,6 +12,8 @@ import queue
 from datetime import datetime
 from ultralytics import YOLO
 import platform
+import requests
+import json
 
 # 얼굴 분석기 임포트 (선택적)
 try:
@@ -105,7 +107,17 @@ class RealtimeDetector:
         self.frame_count = 0
         self.fps_start_time = time.time()
         
+        # API 설정
+        self.api_endpoint = config.get('api_endpoint', '')
+        self.api_enabled = bool(self.api_endpoint)
+        
+        # 실시간 API 전송 상태 추적
+        self.last_sad_api_time = {}  # ROI별 마지막 SAD API 전송 시간
+        self.sad_api_cooldown = 10  # SAD API 재전송 대기 시간 (초)
+        
         print("[RealtimeDetector] 초기화 완료")
+        if self.api_enabled:
+            print(f"[RealtimeDetector] API 엔드포인트: {self.api_endpoint}")
     
     def is_person_in_polygon_roi(self, bbox, roi):
         """사람이 ROI 내에 있는지 확인"""
@@ -120,6 +132,48 @@ class RealtimeDetector:
             return result >= 0
         
         return False
+    
+    def send_realtime_api(self, roi_id, event_type, reason, frame=None):
+        """실시간 API 전송 (SAD 표정, 부재 상태)"""
+        if not self.api_enabled:
+            return
+        
+        try:
+            # API 페이로드 생성
+            payload = {
+                'eventId': f"{roi_id}_{event_type}_{int(time.time())}",
+                'roi_id': roi_id,
+                'status': event_type,
+                'reason': reason,
+                'timestamp': datetime.now().isoformat(),
+                'watch_id': self.config.get('watch_id', 'unknown')
+            }
+            
+            # 이미지 포함 여부
+            if self.config.get('include_image_url', False) and frame is not None:
+                # 이미지 처리 로직 (필요시 추가)
+                payload['imageUrl'] = f"{self.config.get('image_base_url', '')}/placeholder.jpg"
+            
+            print(f"[RealtimeDetector] 🚨 실시간 API 전송: {roi_id} - {reason}")
+            
+            # API 전송
+            response = requests.post(
+                self.api_endpoint,
+                json=payload,
+                timeout=5
+            )
+            
+            if response.status_code in [200, 201]:
+                print(f"[RealtimeDetector] ✅ API 전송 성공: {response.status_code}")
+            else:
+                print(f"[RealtimeDetector] ⚠️ API 응답 오류: {response.status_code}")
+                
+        except requests.exceptions.Timeout:
+            print(f"[RealtimeDetector] ⏱️ API 타임아웃")
+        except requests.exceptions.ConnectionError:
+            print(f"[RealtimeDetector] ❌ API 연결 실패")
+        except Exception as e:
+            print(f"[RealtimeDetector] ❌ API 전송 오류: {e}")
     
     def update_roi_state(self, roi_id, person_in_roi):
         """ROI 상태 업데이트 및 API 이벤트 전송 판단"""
@@ -165,6 +219,13 @@ class RealtimeDetector:
                 if absence_duration >= self.absence_threshold:
                     if state['last_status_sent'] == 'present':
                         state['last_status_sent'] = 'absent'
+                        
+                        # 🚨 실시간 API 전송 (부재 상태)
+                        self.send_realtime_api(
+                            roi_id=roi_id,
+                            event_type='absent',
+                            reason='Person absence detected'
+                        )
                         
                         # 이벤트 큐에 전송
                         self.event_queue.put({
@@ -380,11 +441,35 @@ class RealtimeDetector:
                             # 표정 정보 추출 (딕셔너리 처리)
                             expr_info = face_result.get('expression', {})
                             if isinstance(expr_info, dict):
-                                expr_text = f"{expr_info.get('expression', 'unknown')} ({expr_info.get('confidence', 0):.2f})"
+                                expression = expr_info.get('expression', 'unknown')
+                                confidence = expr_info.get('confidence', 0)
+                                expr_text = f"{expression} ({confidence:.2f})"
                             else:
+                                expression = 'unknown'
                                 expr_text = str(expr_info)
                             
                             print(f"[RealtimeDetector] ✅ 얼굴 분석 완료: Eyes={'Open' if face_result['eyes_open'] else 'Closed'}, Mouth={face_result['mouth_state']}, Expression={expr_text}")
+                            
+                            # 🚨 SAD 표정 감지 시 실시간 API 전송
+                            if expression == 'sad' and confidence > 0.6:
+                                # 어느 ROI에 속하는지 확인
+                                person_roi = None
+                                for roi in self.roi_regions:
+                                    if self.is_person_in_polygon_roi(bbox, roi):
+                                        person_roi = roi['id']
+                                        break
+                                
+                                if person_roi:
+                                    # Cooldown 체크 (같은 ROI에서 10초 내 중복 전송 방지)
+                                    last_sad_time = self.last_sad_api_time.get(person_roi, 0)
+                                    if current_time - last_sad_time >= self.sad_api_cooldown:
+                                        self.send_realtime_api(
+                                            roi_id=person_roi,
+                                            event_type='sad_expression',
+                                            reason=f'SAD expression detected (confidence: {confidence:.2f})',
+                                            frame=frame
+                                        )
+                                        self.last_sad_api_time[person_roi] = current_time
                     except Exception as e:
                         print(f"[RealtimeDetector] ⚠️  얼굴 분석 실패: {e}")
             
