@@ -342,28 +342,32 @@ st.sidebar.markdown("---")
 # API 설정
 st.sidebar.subheader("🌐 API 설정")
 
-# Watch ID
+# Watch ID (필수)
 config['watch_id'] = st.sidebar.text_input(
-    "Watch ID",
-    config.get('watch_id', 'watch_1760663070591_8022')
+    "Watch ID (필수)",
+    config.get('watch_id', 'watch_1764653561585_7956'),
+    help="워치 ID - API 호출 시 필수"
 )
 
-# 이미지 설정
-config['include_image_url'] = st.sidebar.checkbox(
-    "이미지 URL 포함",
-    config.get('include_image_url', True)
+# Sender ID (필수)
+config['sender_id'] = st.sidebar.text_input(
+    "Sender ID (필수)",
+    config.get('sender_id', 'test-user'),
+    help="발신자 ID - API 호출 시 필수"
 )
 
-if config['include_image_url']:
-    config['image_base_url'] = st.sidebar.text_input(
-        "이미지 베이스 URL",
-        config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
-    )
+# 이미지 전송 설정 (선택)
+config['include_image'] = st.sidebar.checkbox(
+    "이미지 전송 활성화 (선택)",
+    config.get('include_image', False),
+    help="검출된 프레임을 이미지 파일로 전송"
+)
 
-# FCM 설정
-config['fcm_project_id'] = st.sidebar.text_input(
-    "FCM Project ID",
-    config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+# Note (선택)
+config['default_note'] = st.sidebar.text_input(
+    "기본 메시지 (선택)",
+    config.get('default_note', '응급상황 감지'),
+    help="응급상황 메시지 - 선택사항"
 )
 
 st.sidebar.markdown("---")
@@ -402,23 +406,21 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
     # 새 API 추가
     st.markdown("**새 API 추가**")
     new_api_name = st.text_input("API 이름", "Emergency Alert API", key="new_api_name")
-    new_api_url = st.text_input(
-        "API URL",
+    
+    st.caption("📝 API URL 형식: http://host:port/api/emergency/quick/{watchId}")
+    new_api_base_url = st.text_input(
+        "API Base URL",
         "http://10.10.11.23:10008/api/emergency/quick",
-        key="new_api_url"
-    )
-    new_api_method = st.selectbox(
-        "HTTP Method",
-        ["POST", "PUT", "PATCH"],
-        key="new_api_method"
+        key="new_api_url",
+        help="watchId는 자동으로 추가됩니다"
     )
     
     if st.button("➕ API 추가"):
         new_endpoint = {
             "name": new_api_name,
-            "url": new_api_url,
+            "url": new_api_base_url,
             "enabled": True,
-            "method": new_api_method
+            "method": "POST"
         }
         config['api_endpoints'].append(new_endpoint)
         st.success(f"✅ {new_api_name} 추가됨!")
@@ -949,7 +951,7 @@ with tab4:
                     st.session_state.test_api_response = {
                         'status_code': response.status_code,
                         'response_text': response.text,
-                        'request_data': event_data,
+                        'request_data': request_data,
                         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     }
                     
