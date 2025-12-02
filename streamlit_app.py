@@ -72,6 +72,19 @@ if 'custom_roi_mode' not in st.session_state:
     st.session_state.custom_roi_mode = False
 if 'custom_roi_image' not in st.session_state:
     st.session_state.custom_roi_image = None
+if 'face_analysis_stats' not in st.session_state:
+    st.session_state.face_analysis_stats = {
+        'total_faces_detected': 0,
+        'expressions': {'neutral': 0, 'happy': 0, 'sad': 0, 'surprised': 0, 'pain': 0, 'angry': 0},
+        'eyes_open_count': 0,
+        'eyes_closed_count': 0,
+        'mouth_closed_count': 0,
+        'mouth_speaking_count': 0,
+        'mouth_wide_open_count': 0,
+        'mask_detected_count': 0,
+        'last_expression': None,
+        'last_update': None
+    }
 
 
 def load_config():
@@ -733,6 +746,43 @@ with tab2:
                 for event in events:
                     st.session_state.event_log.append(event)
                 
+                # 얼굴 분석 통계 업데이트
+                if hasattr(st.session_state.detector, 'last_face_results') and st.session_state.detector.last_face_results:
+                    for bbox, face_result in st.session_state.detector.last_face_results.items():
+                        if face_result and face_result.get('face_detected'):
+                            # 총 얼굴 검출 수
+                            st.session_state.face_analysis_stats['total_faces_detected'] += 1
+                            
+                            # 눈 상태
+                            if face_result.get('eyes_open'):
+                                st.session_state.face_analysis_stats['eyes_open_count'] += 1
+                            else:
+                                st.session_state.face_analysis_stats['eyes_closed_count'] += 1
+                            
+                            # 입 상태
+                            mouth_state = face_result.get('mouth_state', 'closed')
+                            if mouth_state == 'closed':
+                                st.session_state.face_analysis_stats['mouth_closed_count'] += 1
+                            elif mouth_state == 'speaking':
+                                st.session_state.face_analysis_stats['mouth_speaking_count'] += 1
+                            elif mouth_state == 'wide_open':
+                                st.session_state.face_analysis_stats['mouth_wide_open_count'] += 1
+                            
+                            # 표정
+                            expr_info = face_result.get('expression', {})
+                            if isinstance(expr_info, dict):
+                                expression = expr_info.get('expression', 'neutral')
+                                if expression in st.session_state.face_analysis_stats['expressions']:
+                                    st.session_state.face_analysis_stats['expressions'][expression] += 1
+                                st.session_state.face_analysis_stats['last_expression'] = expression
+                            
+                            # 마스크/호흡기
+                            if face_result.get('has_mask_or_ventilator'):
+                                st.session_state.face_analysis_stats['mask_detected_count'] += 1
+                            
+                            # 업데이트 시간
+                            st.session_state.face_analysis_stats['last_update'] = datetime.now()
+                
                 # UI 업데이트 주기 (0.033초 = 약 30fps)
                 time.sleep(0.033)
                 
@@ -783,10 +833,78 @@ with tab2:
 with tab3:
     st.header("통계 및 이벤트 로그")
     
+    # 얼굴 분석 통계 (활성화 시에만 표시)
+    if config.get('enable_face_analysis', False) and st.session_state.face_analysis_stats['total_faces_detected'] > 0:
+        st.subheader("😊 얼굴 분석 통계")
+        
+        face_stats = st.session_state.face_analysis_stats
+        
+        # 통계 카드 3열
+        col_face1, col_face2, col_face3 = st.columns(3)
+        
+        with col_face1:
+            st.metric("🎭 총 검출 얼굴", face_stats['total_faces_detected'])
+            
+            # 표정 분포
+            st.markdown("**표정 분포**")
+            total_expr = sum(face_stats['expressions'].values())
+            if total_expr > 0:
+                for expr, count in face_stats['expressions'].items():
+                    if count > 0:
+                        percentage = (count / total_expr) * 100
+                        emoji_map = {
+                            'neutral': '😐', 'happy': '😊', 'sad': '😢',
+                            'surprised': '😲', 'pain': '😖', 'angry': '😠'
+                        }
+                        st.text(f"{emoji_map.get(expr, '😐')} {expr.capitalize()}: {count} ({percentage:.1f}%)")
+            
+            if face_stats['last_expression']:
+                st.info(f"최근 표정: {face_stats['last_expression']}")
+        
+        with col_face2:
+            # 눈 상태
+            st.markdown("**👁️ 눈 상태**")
+            st.metric("눈 뜸", face_stats['eyes_open_count'])
+            st.metric("눈 감음", face_stats['eyes_closed_count'])
+            
+            total_eyes = face_stats['eyes_open_count'] + face_stats['eyes_closed_count']
+            if total_eyes > 0:
+                open_rate = (face_stats['eyes_open_count'] / total_eyes) * 100
+                st.progress(open_rate / 100, text=f"개안율: {open_rate:.1f}%")
+        
+        with col_face3:
+            # 입 상태
+            st.markdown("**👄 입 상태**")
+            st.metric("닫힘", face_stats['mouth_closed_count'])
+            st.metric("말하기", face_stats['mouth_speaking_count'])
+            st.metric("크게 열림", face_stats['mouth_wide_open_count'])
+            
+            # 마스크/호흡기
+            st.markdown("**😷 마스크/호흡기**")
+            st.metric("착용 검출", face_stats['mask_detected_count'])
+        
+        # 통계 초기화 버튼
+        if st.button("🔄 얼굴 분석 통계 초기화"):
+            st.session_state.face_analysis_stats = {
+                'total_faces_detected': 0,
+                'expressions': {'neutral': 0, 'happy': 0, 'sad': 0, 'surprised': 0, 'pain': 0, 'angry': 0},
+                'eyes_open_count': 0,
+                'eyes_closed_count': 0,
+                'mouth_closed_count': 0,
+                'mouth_speaking_count': 0,
+                'mouth_wide_open_count': 0,
+                'mask_detected_count': 0,
+                'last_expression': None,
+                'last_update': None
+            }
+            st.rerun()
+        
+        st.markdown("---")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📊 검출 통계")
+        st.subheader("📊 YOLO 검출 통계")
         
         # 통계 카드
         for roi in st.session_state.roi_regions:
