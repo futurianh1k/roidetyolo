@@ -390,9 +390,9 @@ class RealtimeDetector:
             
             # 얼굴 분석 결과 저장
             self.last_face_results = face_analysis_results
-                
-                # ROI 상태 업데이트
-                self.update_roi_state(roi_id, person_in_roi)
+            
+            # ROI 상태 업데이트
+            self.update_roi_state(roi_id, person_in_roi)
             
             # 검출 결과 저장 (다음 프레임들에서 재사용)
             self.last_detections = detections

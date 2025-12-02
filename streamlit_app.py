@@ -540,7 +540,7 @@ with tab1:
         
         with col_btn1:
             # 좌/우 2분할 ROI 자동 생성 버튼
-            if st.button("⬅️➡️ 좌/우 2분할", use_container_width=True):
+            if st.button("⬅️➡️ 좌/우 2분할", width="stretch"):
                 if ret and frame is not None:
                     frame_height, frame_width = frame.shape[:2]
                     lr_rois = create_left_right_rois(frame_width, frame_height, margin=20)
@@ -557,7 +557,7 @@ with tab1:
         
         with col_btn2:
             # 4사분면 ROI 자동 생성 버튼
-            if st.button("🎯 4사분면", use_container_width=True):
+            if st.button("🎯 4사분면", width="stretch"):
                 if ret and frame is not None:
                     frame_height, frame_width = frame.shape[:2]
                     quadrant_rois = create_quadrant_rois(frame_width, frame_height, margin=20)
@@ -578,7 +578,7 @@ with tab1:
         st.markdown("**✏️ 커스텀 ROI 설정**")
         
         if not st.session_state.custom_roi_mode:
-            if st.button("🖱️ 마우스로 ROI 그리기", type="primary", use_container_width=True):
+            if st.button("🖱️ 마우스로 ROI 그리기", type="primary", width="stretch"):
                 st.session_state.custom_roi_mode = True
                 st.session_state.custom_roi_image = frame_rgb.copy() if ret else None
                 st.rerun()
@@ -590,7 +590,7 @@ with tab1:
             else:
                 st.warning("📝 수동 좌표 입력 모드")
             
-            if st.button("❌ 커스텀 ROI 모드 종료", type="secondary", use_container_width=True):
+            if st.button("❌ 커스텀 ROI 모드 종료", type="secondary", width="stretch"):
                 st.session_state.custom_roi_mode = False
                 st.session_state.custom_roi_image = None
                 st.rerun()
@@ -726,7 +726,7 @@ with tab2:
                     
                     # PIL Image로 변환 (미디어 파일 오류 방지)
                     pil_image = Image.fromarray(frame_rgb)
-                    video_placeholder.image(pil_image, use_container_width=True)
+                    video_placeholder.image(pil_image, width="stretch")
                     
                     # FPS 정보
                     fps_placeholder.caption(f"FPS: {st.session_state.detector.fps:.1f}")
