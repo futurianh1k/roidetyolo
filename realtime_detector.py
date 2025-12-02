@@ -241,16 +241,23 @@ class RealtimeDetector:
             face_result = self.last_face_results.get(tuple(detection['bbox']))
             
             if face_result and face_result.get('face_detected'):
+                # 표정 정보 추출 (딕셔너리 처리)
+                expr_info = face_result.get('expression', {})
+                if isinstance(expr_info, dict):
+                    expr_text = f"{expr_info.get('expression', 'unknown')} ({expr_info.get('confidence', 0):.2f})"
+                else:
+                    expr_text = str(expr_info)
+                
                 # 텍스트 준비
                 info_lines = [
                     f"Person {conf:.2f}",
                     f"Eyes: {'Open' if face_result['eyes_open'] else 'Closed'}",
                     f"Mouth: {face_result['mouth_state']}",
-                    f"Expr: {face_result['expression']}",
+                    f"Expr: {expr_text}",
                 ]
                 
-                if face_result.get('has_ventilator'):
-                    info_lines.append(f"Ventilator: Yes ({face_result['ventilator_confidence']:.2f})")
+                if face_result.get('has_mask_or_ventilator'):
+                    info_lines.append(f"Mask/Ventilator: Yes ({face_result['device_confidence']:.2f})")
                 
                 # 텍스트 배경 및 표시
                 text_y = y1 - 10
@@ -369,7 +376,15 @@ class RealtimeDetector:
                         face_result = self.face_analyzer.analyze_face(frame, bbox)
                         if face_result:
                             face_analysis_results[tuple(bbox)] = face_result
-                            print(f"[RealtimeDetector] 얼굴 분석 완료: Eyes={'Open' if face_result['eyes_open'] else 'Closed'}, Mouth={face_result['mouth_state']}")
+                            
+                            # 표정 정보 추출 (딕셔너리 처리)
+                            expr_info = face_result.get('expression', {})
+                            if isinstance(expr_info, dict):
+                                expr_text = f"{expr_info.get('expression', 'unknown')} ({expr_info.get('confidence', 0):.2f})"
+                            else:
+                                expr_text = str(expr_info)
+                            
+                            print(f"[RealtimeDetector] ✅ 얼굴 분석 완료: Eyes={'Open' if face_result['eyes_open'] else 'Closed'}, Mouth={face_result['mouth_state']}, Expression={expr_text}")
                     except Exception as e:
                         print(f"[RealtimeDetector] ⚠️  얼굴 분석 실패: {e}")
             

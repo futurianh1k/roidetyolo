@@ -11,6 +11,11 @@
   "api_endpoint": "http://10.10.11.23:10008/api/emergency",
   "watch_id": "watch_1760663070591_8022",
   "include_image_url": false,
+  "enable_face_analysis": true,
+  "face_analysis_roi_only": false,
+  "ear_threshold": 0.21,
+  "mar_speak_threshold": 0.3,
+  "mar_open_threshold": 0.6,
   "roi_regions": [
     {
       "id": "ROI1",

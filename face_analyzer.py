@@ -196,38 +196,87 @@ class FaceAnalyzer:
     
     def analyze_expression(self, landmarks):
         """
-        얼굴 표정 분석 (간단한 규칙 기반)
+        얼굴 표정 분석 (개선된 규칙 기반)
         
         Args:
             landmarks: MediaPipe 랜드마크
         
         Returns:
-            str: 표정 ('neutral', 'happy', 'sad', 'surprised', 'pain')
+            dict: 표정 정보 {'expression': str, 'confidence': float, 'metrics': dict}
         """
-        # 눈썹 평균 높이
+        # 눈썹 평균 높이 (정규화)
         left_eyebrow_y = np.mean([landmarks[i].y for i in self.LEFT_EYEBROW])
         right_eyebrow_y = np.mean([landmarks[i].y for i in self.RIGHT_EYEBROW])
         eyebrow_avg = (left_eyebrow_y + right_eyebrow_y) / 2
         
-        # 입꼬리 높이
-        left_mouth_corner = landmarks[61].y
-        right_mouth_corner = landmarks[291].y
-        mouth_corners_avg = (left_mouth_corner + right_mouth_corner) / 2
+        # 눈 중앙점
+        left_eye_center_y = np.mean([landmarks[i].y for i in self.LEFT_EYE])
+        right_eye_center_y = np.mean([landmarks[i].y for i in self.RIGHT_EYE])
+        eye_avg = (left_eye_center_y + right_eye_center_y) / 2
         
-        # 입 중앙 높이
-        mouth_center = landmarks[13].y
+        # 눈썹-눈 거리 (표정 강도 측정)
+        eyebrow_eye_dist = eye_avg - eyebrow_avg
         
-        # 간단한 규칙 기반 분류
-        if eyebrow_avg < 0.3:  # 눈썹이 많이 올라감
-            return "surprised"
-        elif mouth_corners_avg < mouth_center - 0.02:  # 입꼬리가 올라감
-            return "happy"
-        elif mouth_corners_avg > mouth_center + 0.02:  # 입꼬리가 내려감
-            return "sad"
-        elif eyebrow_avg < 0.35 and mouth_corners_avg > 0.55:  # 찡그림
-            return "pain"
-        else:
-            return "neutral"
+        # 입꼏리 좌표
+        left_mouth_corner = landmarks[61]  # 왼쪽 입꼬리
+        right_mouth_corner = landmarks[291]  # 오른쪽 입꼬리
+        
+        # 입 중앙 상단/하단
+        mouth_top = landmarks[13].y  # 윗입술 중앙
+        mouth_bottom = landmarks[14].y  # 아랫입술 중앙
+        
+        # 입꼬리 평균 높이
+        mouth_corners_avg = (left_mouth_corner.y + right_mouth_corner.y) / 2
+        
+        # 입 벌림 정도 (MAR과 유사)
+        mouth_opening = mouth_bottom - mouth_top
+        
+        # 입꼬리 상승/하강 (웃음/슬픔 판단)
+        mouth_corner_curl = mouth_top - mouth_corners_avg
+        
+        # 디버깅 메트릭
+        metrics = {
+            'eyebrow_avg': float(eyebrow_avg),
+            'eyebrow_eye_dist': float(eyebrow_eye_dist),
+            'mouth_corners_avg': float(mouth_corners_avg),
+            'mouth_corner_curl': float(mouth_corner_curl),
+            'mouth_opening': float(mouth_opening)
+        }
+        
+        # 표정 분류 (개선된 규칙)
+        expression = "neutral"
+        confidence = 0.5
+        
+        # 놀람: 눈썹 많이 올라감 + 입 벌림
+        if eyebrow_eye_dist > 0.04 and mouth_opening > 0.03:
+            expression = "surprised"
+            confidence = min(0.9, eyebrow_eye_dist * 15 + mouth_opening * 15)
+        
+        # 웃음: 입꼬리 올라감
+        elif mouth_corner_curl > 0.015:
+            expression = "happy"
+            confidence = min(0.9, mouth_corner_curl * 40)
+        
+        # 슬픔: 입꼬리 내려감
+        elif mouth_corner_curl < -0.015:
+            expression = "sad"
+            confidence = min(0.9, abs(mouth_corner_curl) * 40)
+        
+        # 고통/찡그림: 눈썹 좁아짐 + 입 약간 벌림
+        elif eyebrow_eye_dist < 0.025 and mouth_opening > 0.02:
+            expression = "pain"
+            confidence = min(0.9, (0.03 - eyebrow_eye_dist) * 20)
+        
+        # 화남: 눈썹 좁아짐 + 입 다물음
+        elif eyebrow_eye_dist < 0.025 and mouth_opening < 0.015:
+            expression = "angry"
+            confidence = min(0.9, (0.03 - eyebrow_eye_dist) * 20)
+        
+        return {
+            'expression': expression,
+            'confidence': confidence,
+            'metrics': metrics
+        }
     
     def analyze_face(self, frame, person_bbox=None):
         """
