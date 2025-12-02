@@ -17,6 +17,8 @@ import requests
 from ultralytics import YOLO
 import threading
 from collections import deque
+from PIL import Image
+import io
 
 # 이미지 좌표 클릭 라이브러리 (선택적)
 try:
@@ -100,10 +102,18 @@ def load_config():
             "face_analysis_roi_only": True,
             "api_endpoints": [
                 {
-                    "name": "Emergency Alert API",
+                    "name": "Emergency Alert API (JSON)",
                     "url": "http://10.10.11.23:10008/api/emergency/quick",
                     "enabled": True,
-                    "method": "POST"
+                    "method": "POST",
+                    "type": "json"
+                },
+                {
+                    "name": "Emergency Alert API (Multipart)",
+                    "url": "http://10.10.11.23:10008/api/emergency/quick/{watchId}",
+                    "enabled": True,
+                    "method": "POST",
+                    "type": "multipart"
                 }
             ],
             "watch_id": "watch_1760663070591_8022",
@@ -698,7 +708,10 @@ with tab2:
                 if frame is not None:
                     # BGR -> RGB 변환
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    video_placeholder.image(frame_rgb, width='stretch')
+                    
+                    # PIL Image로 변환 (미디어 파일 오류 방지)
+                    pil_image = Image.fromarray(frame_rgb)
+                    video_placeholder.image(pil_image, use_container_width=True)
                     
                     # FPS 정보
                     fps_placeholder.caption(f"FPS: {st.session_state.detector.fps:.1f}")
@@ -833,45 +846,104 @@ with tab4:
             st.markdown("---")
             st.subheader("📤 테스트 데이터")
             
-            test_roi_id = st.text_input("ROI ID", "ROI1")
-            test_status = st.selectbox("Status", ["SENT", "PENDING", "FAILED"])
+            # API 타입 선택
+            api_type = st.radio(
+                "API 타입",
+                ["JSON (application/json)", "Multipart (multipart/form-data)"],
+                key="api_type"
+            )
+            
+            # 공통 필드
+            test_watch_id = st.text_input("1. watchId (필수)", config.get('watch_id', 'watch_1764653561585_7956'))
+            test_sender_id = st.text_input("2. senderId (필수)", "test-user")
+            test_note = st.text_input("3. note (선택)", "응급상황 메시지")
+            
+            # 이미지 업로드 (Multipart만)
+            uploaded_file = None
+            if api_type.startswith("Multipart"):
+                uploaded_file = st.file_uploader("4. image (선택)", type=['jpg', 'jpeg', 'png'])
             
             # 테스트 버튼
             if st.button("🚀 API 테스트 실행", type="primary"):
                 try:
-                    # 이벤트 데이터 생성
-                    event_id = str(uuid.uuid4())
-                    timestamp = datetime.now().isoformat()
-                    
-                    # 이미지 URL 생성 (테스트용)
-                    image_url = None
-                    if config.get('include_image_url', False):
-                        image_base = config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
-                        image_filename = f"emergency_{event_id.split('-')[0]}.jpeg"
-                        image_url = f"{image_base}/{image_filename}"
-                    
-                    # FCM Message ID 생성
-                    fcm_project = config.get('fcm_project_id', 'emergency-alert-system-f27e6')
-                    fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
-                    
-                    event_data = {
-                        "eventId": event_id,
-                        "fcmMessageId": fcm_message_id,
-                        "imageUrl": image_url,
-                        "status": test_status,
-                        "createdAt": timestamp,
-                        "watchId": config.get('watch_id', 'watch_streamlit')
-                    }
-                    
                     # API 호출
                     with st.spinner('API 호출 중...'):
-                        response = requests.request(
-                            method=selected_api['method'],
-                            url=selected_api['url'],
-                            json=event_data,
-                            headers={'Content-Type': 'application/json'},
-                            timeout=10
-                        )
+                        if api_type.startswith("JSON"):
+                            # JSON 방식 (기존)
+                            event_id = str(uuid.uuid4())
+                            timestamp = datetime.now().isoformat()
+                            
+                            # 이미지 URL 생성 (테스트용)
+                            image_url = None
+                            if config.get('include_image_url', False):
+                                image_base = config.get('image_base_url', 'http://10.10.11.79:8080/api/images')
+                                image_filename = f"emergency_{event_id.split('-')[0]}.jpeg"
+                                image_url = f"{image_base}/{image_filename}"
+                            
+                            # FCM Message ID 생성
+                            fcm_project = config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+                            fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
+                            
+                            event_data = {
+                                "eventId": event_id,
+                                "fcmMessageId": fcm_message_id,
+                                "imageUrl": image_url,
+                                "status": "SENT",
+                                "createdAt": timestamp,
+                                "watchId": test_watch_id
+                            }
+                            
+                            response = requests.request(
+                                method=selected_api['method'],
+                                url=selected_api['url'],
+                                json=event_data,
+                                headers={'Content-Type': 'application/json'},
+                                timeout=10
+                            )
+                            
+                            request_data = event_data
+                        
+                        else:
+                            # Multipart 방식 (새로 추가)
+                            # URL에 watchId 추가
+                            api_url = selected_api['url']
+                            if '{watchId}' in api_url:
+                                api_url = api_url.replace('{watchId}', test_watch_id)
+                            else:
+                                # watchId가 URL에 없으면 path parameter로 추가
+                                if not api_url.endswith('/'):
+                                    api_url += '/'
+                                api_url += test_watch_id
+                            
+                            # Form data 생성
+                            form_data = {
+                                'senderId': test_sender_id,
+                            }
+                            
+                            # note가 비어있지 않으면 추가
+                            if test_note:
+                                form_data['note'] = test_note
+                            
+                            # 파일 첨부
+                            files = {}
+                            if uploaded_file is not None:
+                                files['image'] = (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)
+                            
+                            response = requests.request(
+                                method=selected_api['method'],
+                                url=api_url,
+                                data=form_data,
+                                files=files if files else None,
+                                timeout=10
+                            )
+                            
+                            request_data = {
+                                'url': api_url,
+                                'method': selected_api['method'],
+                                'senderId': test_sender_id,
+                                'note': test_note if test_note else '(empty)',
+                                'image': uploaded_file.name if uploaded_file else '(no file)'
+                            }
                     
                     # 결과 저장
                     st.session_state.test_api_response = {
@@ -950,8 +1022,8 @@ with tab4:
     st.markdown("---")
     st.subheader("💡 API 이벤트 형식")
     
-    with st.expander("이벤트 데이터 구조"):
-        example_event = {
+    with st.expander("📘 JSON API 예시 (application/json)"):
+        example_json_event = {
             "eventId": "fc4d54d0-717c-4fe8-95be-fdf8f188a401",
             "fcmMessageId": "projects/emergency-alert-system-f27e6/messages/1234567890",
             "imageUrl": "http://10.10.11.79:8080/api/images/emergency_2cd5e9eb.jpeg",
@@ -959,16 +1031,37 @@ with tab4:
             "createdAt": "2025-10-17T10:30:00",
             "watchId": "watch_1760663070591_8022"
         }
-        st.json(example_event)
+        st.json(example_json_event)
         
         st.markdown("""
-        **필드 설명**:
+        **JSON 필드 설명**:
         - `eventId`: 이벤트 고유 ID (UUID)
         - `fcmMessageId`: Firebase Cloud Messaging ID
         - `imageUrl`: 이벤트 관련 이미지 URL (선택적)
         - `status`: 이벤트 상태 (SENT, PENDING, FAILED)
         - `createdAt`: 이벤트 생성 시간 (ISO 8601)
         - `watchId`: Watch 고유 식별자
+        """)
+    
+    with st.expander("📗 Multipart API 예시 (multipart/form-data)"):
+        st.markdown("""
+        **URL**: `POST /api/emergency/quick/{watchId}`
+        
+        **Path Parameters**:
+        - `watchId` (필수): 워치 ID (예: watch_1764653561585_7956)
+        
+        **Form Data**:
+        - `senderId` (필수, string): 발신자 ID (예: test-user)
+        - `note` (선택, string): 응급상황 메시지 (예: 응급실 호출 - 환자 상태 악화)
+        - `image` (선택, binary): 이미지 파일 (JPG, PNG, JPEG 형식)
+        
+        **예시**:
+        ```bash
+        curl -X POST "http://10.10.11.23:10008/api/emergency/quick/watch_1764653561585_7956" \\
+          -F "senderId=test-user" \\
+          -F "note=응급상황 메시지" \\
+          -F "image=@detection_frame.jpg"
+        ```
         """)
 
 # 푸터
