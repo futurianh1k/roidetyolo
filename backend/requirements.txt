@@ -37,8 +37,8 @@ requests>=2.31.0
 aiohttp>=3.9.0
 
 # Session management
-redis>=5.0.0  # Optional for production
-aioredis>=2.0.0  # Async Redis client
+redis>=5.0.0
+aioredis>=2.0.1  # Async Redis client
 
 # Testing
 pytest>=7.4.0

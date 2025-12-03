@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
-    USE_REDIS: bool = False  # False면 메모리 기반 세션 관리
+    USE_REDIS: bool = True  # True면 Redis 세션 관리, False면 메모리 기반
     
     # YOLO 모델 설정
     DEFAULT_YOLO_MODEL: str = "yolov8n.pt"
@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     WS_HEARTBEAT_INTERVAL: int = 30  # seconds
     
     # 보안 설정
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str = "your-secret-key-change-in-production-YOLO-ROI-2025"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8시간
     
     class Config:
         env_file = ".env"

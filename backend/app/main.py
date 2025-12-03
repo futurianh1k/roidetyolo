@@ -7,9 +7,11 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from .core.config import settings
-from .api import sessions, websocket
+from .api import sessions, websocket, auth, devices
 from .services.session_manager import session_manager
+from .services.redis_session_manager import redis_session_manager
 from .services.detection_service import detection_service_manager
+from .services.device_manager import device_manager
 
 
 @asynccontextmanager
@@ -17,7 +19,24 @@ async def lifespan(app: FastAPI):
     """애플리케이션 라이프사이클 관리"""
     # Startup
     print("🚀 Starting YOLO ROI Detection API...")
+    
+    # Redis 연결 초기화
+    if settings.USE_REDIS:
+        try:
+            await redis_session_manager.connect()
+            print("✅ Redis connected successfully")
+        except Exception as e:
+            print(f"⚠️ Redis connection failed: {e}")
+            print("   Falling back to in-memory session management")
+    
+    # 장비 관리자 초기화
+    await device_manager.initialize()
+    print("✅ Device manager initialized")
+    
+    # 세션 관리자 시작
     await session_manager.start()
+    print("✅ Session manager started")
+    
     print("✅ API started successfully!")
     
     yield
@@ -26,6 +45,11 @@ async def lifespan(app: FastAPI):
     print("⏹️ Shutting down API...")
     await detection_service_manager.stop_all()
     await session_manager.stop()
+    
+    if settings.USE_REDIS:
+        await redis_session_manager.disconnect()
+        print("✅ Redis disconnected")
+    
     print("👋 API shutdown complete")
 
 
@@ -48,6 +72,8 @@ app.add_middleware(
 
 
 # 라우터 등록
+app.include_router(auth.router, prefix=settings.API_V1_STR)
+app.include_router(devices.router, prefix=settings.API_V1_STR)
 app.include_router(sessions.router, prefix=settings.API_V1_STR)
 app.include_router(websocket.router, prefix=settings.API_V1_STR)
 
