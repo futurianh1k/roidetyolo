@@ -1,0 +1,19 @@
+# PyQt5 UI 버전 의존성
+
+# Core dependencies (기존 프로젝트와 동일)
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+requests>=2.31.0
+numpy>=1.24.0,<2.0.0
+Pillow>=10.0.0
+
+# Face analysis
+mediapipe>=0.10.0
+
+# PyQt5 UI dependencies
+PyQt5>=5.15.0
+PyQt5-Qt5>=5.15.0
+PyQt5-sip>=12.11.0
+
+# Optional: Enhanced PyQt widgets
+pyqtgraph>=0.13.0  # For plotting/graphs
