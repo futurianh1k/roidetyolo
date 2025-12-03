@@ -296,8 +296,17 @@ class MainWindow(QMainWindow):
         self.watch_id_edit = QLineEdit(self.config.get('watch_id', ''))
         api_layout.addRow("Watch ID:", self.watch_id_edit)
         
+        self.sender_id_edit = QLineEdit(self.config.get('sender_id', 'yolo_detector'))
+        api_layout.addRow("Sender ID:", self.sender_id_edit)
+        
         self.api_endpoint_edit = QLineEdit(self.config.get('api_endpoint', ''))
         api_layout.addRow("API 엔드포인트:", self.api_endpoint_edit)
+        
+        self.note_edit = QLineEdit(self.config.get('note', ''))
+        api_layout.addRow("Note (선택):", self.note_edit)
+        
+        self.method_edit = QLineEdit(self.config.get('method', 'realtime_detection'))
+        api_layout.addRow("Method (선택):", self.method_edit)
         
         api_group.setLayout(api_layout)
         layout.addWidget(api_group)
@@ -586,7 +595,10 @@ class MainWindow(QMainWindow):
         self.config['enable_face_analysis'] = self.face_analysis_check.isChecked()
         self.config['face_analysis_roi_only'] = self.face_roi_only_check.isChecked()
         self.config['watch_id'] = self.watch_id_edit.text()
+        self.config['sender_id'] = self.sender_id_edit.text()
         self.config['api_endpoint'] = self.api_endpoint_edit.text()
+        self.config['note'] = self.note_edit.text()
+        self.config['method'] = self.method_edit.text()
         self.config['roi_regions'] = self.roi_regions
         
         self.save_config()

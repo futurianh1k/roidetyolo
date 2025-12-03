@@ -146,7 +146,10 @@ class RealtimeDetector:
                 'status': event_type,
                 'reason': reason,
                 'timestamp': datetime.now().isoformat(),
-                'watch_id': self.config.get('watch_id', 'unknown')
+                'watch_id': self.config.get('watch_id', 'unknown'),
+                'sender_id': self.config.get('sender_id', 'yolo_detector'),
+                'note': self.config.get('note', ''),
+                'method': self.config.get('method', 'realtime_detection')
             }
             
             # 이미지 포함 여부

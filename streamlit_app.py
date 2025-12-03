@@ -377,10 +377,17 @@ config['include_image'] = st.sidebar.checkbox(
 )
 
 # Note (선택)
-config['default_note'] = st.sidebar.text_input(
+config['note'] = st.sidebar.text_input(
     "기본 메시지 (선택)",
-    config.get('default_note', '응급상황 감지'),
+    config.get('note', config.get('default_note', '')),
     help="응급상황 메시지 - 선택사항"
+)
+
+# Method (선택)
+config['method'] = st.sidebar.text_input(
+    "검출 방법 (선택)",
+    config.get('method', 'realtime_detection'),
+    help="검출 방법 식별자 - 선택사항"
 )
 
 st.sidebar.markdown("---")
