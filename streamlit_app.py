@@ -1018,7 +1018,9 @@ with tab4:
                                 "imageUrl": image_url,
                                 "status": "SENT",
                                 "createdAt": timestamp,
-                                "watchId": test_watch_id
+                                "watchId": test_watch_id,
+                                "senderId" : test_sender_id,
+                                'note': test_note if test_note else '(empty)',
                             }
                             
                             response = requests.request(
