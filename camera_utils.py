@@ -2,10 +2,15 @@
 카메라 유틸리티 함수
 - 카메라 자동 인식
 - 카메라 정보 조회
+- 다양한 카메라 소스 타입 지원 (USB, RTSP, HTTP, 파일, 이미지 시퀀스)
 """
 
 import cv2
 import platform
+import os
+import glob
+from urllib.parse import urlparse
+from typing import Optional, Dict, Any, List
 
 
 def detect_available_cameras(max_cameras=10):
@@ -221,6 +226,301 @@ def format_camera_list_for_ui(cameras):
     return formatted
 
 
+class CameraSourceType:
+    """카메라 소스 타입 정의"""
+    USB = "usb"           # USB 카메라 (0, 1, 2...)
+    RTSP = "rtsp"         # RTSP 스트림 (rtsp://...)
+    HTTP = "http"         # HTTP/HTTPS 스트림
+    FILE = "file"         # 비디오 파일 (.mp4, .avi, .mkv 등)
+    IMAGE_SEQ = "image_sequence"  # 이미지 시퀀스 (image_%04d.jpg)
+    GSTREAMER = "gstreamer"  # GStreamer 파이프라인
+    
+
+class CameraSourceManager:
+    """
+    다양한 카메라 소스를 관리하는 클래스
+    - USB 카메라
+    - RTSP 스트림
+    - HTTP/HTTPS 스트림
+    - 비디오 파일
+    - 이미지 시퀀스
+    - GStreamer 파이프라인
+    """
+    
+    @staticmethod
+    def detect_source_type(source) -> str:
+        """
+        소스 타입 자동 감지
+        
+        Args:
+            source: 카메라 소스 (int, str)
+        
+        Returns:
+            str: 소스 타입 (CameraSourceType의 값)
+        """
+        if isinstance(source, int):
+            return CameraSourceType.USB
+        
+        if not isinstance(source, str):
+            return CameraSourceType.USB
+        
+        source_lower = source.lower()
+        
+        # RTSP 스트림
+        if source_lower.startswith('rtsp://'):
+            return CameraSourceType.RTSP
+        
+        # HTTP 스트림
+        if source_lower.startswith(('http://', 'https://')):
+            return CameraSourceType.HTTP
+        
+        # GStreamer 파이프라인 (특정 키워드 포함)
+        if 'appsrc' in source_lower or 'videotestsrc' in source_lower or 'v4l2src' in source_lower:
+            return CameraSourceType.GSTREAMER
+        
+        # 이미지 시퀀스 (와일드카드 포함)
+        if '%' in source or '*' in source:
+            return CameraSourceType.IMAGE_SEQ
+        
+        # 파일 경로
+        if os.path.exists(source):
+            ext = os.path.splitext(source)[1].lower()
+            video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv', '.webm', '.m4v']
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+            
+            if ext in video_extensions:
+                return CameraSourceType.FILE
+            elif ext in image_extensions:
+                return CameraSourceType.IMAGE_SEQ
+        
+        # 숫자 문자열은 USB 카메라 인덱스로 처리
+        if source.isdigit():
+            return CameraSourceType.USB
+        
+        # 기본값: 파일로 간주
+        return CameraSourceType.FILE
+    
+    @staticmethod
+    def open_camera(source, source_type: Optional[str] = None, **kwargs) -> Optional[cv2.VideoCapture]:
+        """
+        카메라 소스 열기
+        
+        Args:
+            source: 카메라 소스
+            source_type: 소스 타입 (자동 감지 가능)
+            **kwargs: 추가 옵션
+                - backend: OpenCV 백엔드 (cv2.CAP_V4L2, cv2.CAP_FFMPEG 등)
+                - rtsp_transport: RTSP 전송 프로토콜 ('tcp' 또는 'udp')
+                - buffer_size: 버퍼 크기
+        
+        Returns:
+            cv2.VideoCapture: 열린 카메라 객체 또는 None
+        """
+        if source_type is None:
+            source_type = CameraSourceManager.detect_source_type(source)
+        
+        print(f"[CameraSourceManager] 소스 타입: {source_type}")
+        print(f"[CameraSourceManager] 소스: {source}")
+        
+        cap = None
+        
+        try:
+            if source_type == CameraSourceType.USB:
+                # USB 카메라
+                camera_index = int(source) if isinstance(source, str) else source
+                backend = kwargs.get('backend', None)
+                
+                if platform.system() == 'Linux' and backend is None:
+                    backend = cv2.CAP_V4L2
+                
+                if backend:
+                    cap = cv2.VideoCapture(camera_index, backend)
+                else:
+                    cap = cv2.VideoCapture(camera_index)
+                
+            elif source_type == CameraSourceType.RTSP:
+                # RTSP 스트림
+                rtsp_transport = kwargs.get('rtsp_transport', 'tcp')
+                
+                # RTSP 옵션 설정
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = f'rtsp_transport;{rtsp_transport}'
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                
+                # 버퍼 크기 설정 (지연 최소화)
+                buffer_size = kwargs.get('buffer_size', 1)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
+                
+            elif source_type == CameraSourceType.HTTP:
+                # HTTP 스트림
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                
+            elif source_type == CameraSourceType.FILE:
+                # 비디오 파일
+                if not os.path.exists(source):
+                    print(f"[CameraSourceManager] ❌ 파일이 존재하지 않습니다: {source}")
+                    return None
+                
+                cap = cv2.VideoCapture(source)
+                
+            elif source_type == CameraSourceType.IMAGE_SEQ:
+                # 이미지 시퀀스
+                cap = cv2.VideoCapture(source)
+                
+            elif source_type == CameraSourceType.GSTREAMER:
+                # GStreamer 파이프라인
+                cap = cv2.VideoCapture(source, cv2.CAP_GSTREAMER)
+            
+            # 카메라 열기 확인
+            if cap and cap.isOpened():
+                print(f"[CameraSourceManager] ✅ 카메라 소스 열기 성공")
+                return cap
+            else:
+                print(f"[CameraSourceManager] ❌ 카메라 소스 열기 실패")
+                if cap:
+                    cap.release()
+                return None
+                
+        except Exception as e:
+            print(f"[CameraSourceManager] ❌ 오류 발생: {e}")
+            if cap:
+                cap.release()
+            return None
+    
+    @staticmethod
+    def validate_source(source) -> Dict[str, Any]:
+        """
+        카메라 소스 유효성 검사
+        
+        Args:
+            source: 카메라 소스
+        
+        Returns:
+            dict: 검증 결과
+            {
+                'valid': bool,
+                'source_type': str,
+                'message': str,
+                'details': dict
+            }
+        """
+        result = {
+            'valid': False,
+            'source_type': None,
+            'message': '',
+            'details': {}
+        }
+        
+        source_type = CameraSourceManager.detect_source_type(source)
+        result['source_type'] = source_type
+        
+        try:
+            if source_type == CameraSourceType.USB:
+                camera_index = int(source) if isinstance(source, str) else source
+                if camera_index < 0:
+                    result['message'] = f"잘못된 카메라 인덱스: {camera_index}"
+                    return result
+                
+                # 카메라 열기 테스트
+                cap = CameraSourceManager.open_camera(source, source_type)
+                if cap and cap.isOpened():
+                    result['valid'] = True
+                    result['message'] = f"USB 카메라 {camera_index} 사용 가능"
+                    result['details'] = {
+                        'width': int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        'height': int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        'fps': cap.get(cv2.CAP_PROP_FPS)
+                    }
+                    cap.release()
+                else:
+                    result['message'] = f"USB 카메라 {camera_index}를 열 수 없습니다"
+                
+            elif source_type in [CameraSourceType.RTSP, CameraSourceType.HTTP]:
+                # URL 유효성 검사
+                parsed = urlparse(source)
+                if not parsed.scheme or not parsed.netloc:
+                    result['message'] = f"잘못된 URL 형식: {source}"
+                    return result
+                
+                result['valid'] = True
+                result['message'] = f"{source_type.upper()} 스트림 URL 유효"
+                result['details'] = {
+                    'url': source,
+                    'scheme': parsed.scheme,
+                    'host': parsed.netloc
+                }
+                
+            elif source_type == CameraSourceType.FILE:
+                if not os.path.exists(source):
+                    result['message'] = f"파일이 존재하지 않습니다: {source}"
+                    return result
+                
+                # 파일 열기 테스트
+                cap = cv2.VideoCapture(source)
+                if cap.isOpened():
+                    result['valid'] = True
+                    result['message'] = f"비디오 파일 사용 가능"
+                    result['details'] = {
+                        'path': source,
+                        'frame_count': int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+                        'width': int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        'height': int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        'fps': cap.get(cv2.CAP_PROP_FPS)
+                    }
+                    cap.release()
+                else:
+                    result['message'] = f"비디오 파일을 열 수 없습니다: {source}"
+                
+            elif source_type == CameraSourceType.IMAGE_SEQ:
+                result['valid'] = True
+                result['message'] = f"이미지 시퀀스 경로"
+                result['details'] = {'pattern': source}
+                
+            elif source_type == CameraSourceType.GSTREAMER:
+                result['valid'] = True
+                result['message'] = f"GStreamer 파이프라인"
+                result['details'] = {'pipeline': source}
+            
+        except Exception as e:
+            result['message'] = f"검증 중 오류: {str(e)}"
+        
+        return result
+    
+    @staticmethod
+    def get_source_info(source) -> Dict[str, Any]:
+        """
+        카메라 소스 정보 조회
+        
+        Args:
+            source: 카메라 소스
+        
+        Returns:
+            dict: 소스 정보
+        """
+        source_type = CameraSourceManager.detect_source_type(source)
+        
+        info = {
+            'source': source,
+            'source_type': source_type,
+            'description': ''
+        }
+        
+        if source_type == CameraSourceType.USB:
+            info['description'] = f"USB 카메라 (인덱스: {source})"
+        elif source_type == CameraSourceType.RTSP:
+            info['description'] = f"RTSP 스트림"
+        elif source_type == CameraSourceType.HTTP:
+            info['description'] = f"HTTP 스트림"
+        elif source_type == CameraSourceType.FILE:
+            info['description'] = f"비디오 파일: {os.path.basename(source)}"
+        elif source_type == CameraSourceType.IMAGE_SEQ:
+            info['description'] = f"이미지 시퀀스"
+        elif source_type == CameraSourceType.GSTREAMER:
+            info['description'] = f"GStreamer 파이프라인"
+        
+        return info
+
+
 # 테스트 코드
 if __name__ == '__main__':
     print("=" * 60)
@@ -250,3 +550,27 @@ if __name__ == '__main__':
         print("\n❌ 사용 가능한 카메라를 찾지 못했습니다.")
         print("   - 카메라가 연결되어 있는지 확인하세요.")
         print("   - 다른 프로그램이 카메라를 사용 중인지 확인하세요.")
+    
+    # CameraSourceManager 테스트
+    print("\n" + "=" * 60)
+    print("CameraSourceManager 테스트")
+    print("=" * 60)
+    
+    test_sources = [
+        0,
+        "rtsp://example.com:554/stream",
+        "http://example.com/stream.mjpg",
+        "/path/to/video.mp4",
+        "image_%04d.jpg",
+    ]
+    
+    for source in test_sources:
+        print(f"\n소스: {source}")
+        source_type = CameraSourceManager.detect_source_type(source)
+        print(f"  타입: {source_type}")
+        
+        validation = CameraSourceManager.validate_source(source)
+        print(f"  유효: {validation['valid']}")
+        print(f"  메시지: {validation['message']}")
+        if validation['details']:
+            print(f"  상세: {validation['details']}")

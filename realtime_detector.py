@@ -15,6 +15,15 @@ import platform
 import requests
 import json
 
+# 카메라 소스 관리자 임포트
+try:
+    from camera_utils import CameraSourceManager, CameraSourceType
+    CAMERA_UTILS_AVAILABLE = True
+    print("[RealtimeDetector] ✅ CameraSourceManager 로드 완료")
+except ImportError:
+    CAMERA_UTILS_AVAILABLE = False
+    print("[RealtimeDetector] ⚠️  CameraSourceManager 없음 - 기본 카메라만 지원")
+
 # 얼굴 분석기 임포트 (선택적)
 try:
     from face_analyzer import FaceAnalyzer
@@ -47,7 +56,14 @@ class RealtimeDetector:
         
         # 카메라 초기화
         self.camera_source = config.get('camera_source', 0)
+        self.camera_source_type = config.get('camera_source_type', None)  # 자동 감지 가능
         self.cap = None
+        
+        # 카메라 소스 정보 출력
+        if CAMERA_UTILS_AVAILABLE:
+            source_info = CameraSourceManager.get_source_info(self.camera_source)
+            print(f"[RealtimeDetector] 카메라 소스: {source_info['description']}")
+            print(f"[RealtimeDetector] 소스 타입: {source_info['source_type']}")
         
         # Linux 환경 감지
         self.is_linux = platform.system() == 'Linux'
@@ -506,14 +522,30 @@ class RealtimeDetector:
         """백그라운드 검출 루프"""
         print("[RealtimeDetector] 검출 시작")
         
-        # 카메라 열기
-        if self.is_linux:
-            self.cap = cv2.VideoCapture(self.camera_source, cv2.CAP_V4L2)
-            print(f"[RealtimeDetector] Linux: V4L2 백엔드로 카메라 {self.camera_source} 열기")
+        # 카메라 열기 (CameraSourceManager 사용)
+        if CAMERA_UTILS_AVAILABLE:
+            print(f"[RealtimeDetector] CameraSourceManager로 카메라 열기")
+            
+            # 추가 옵션 설정
+            camera_options = {}
+            if self.is_linux and isinstance(self.camera_source, int):
+                camera_options['backend'] = cv2.CAP_V4L2
+            
+            self.cap = CameraSourceManager.open_camera(
+                self.camera_source, 
+                self.camera_source_type,
+                **camera_options
+            )
         else:
-            self.cap = cv2.VideoCapture(self.camera_source)
+            # 기본 방식 (하위 호환성)
+            print(f"[RealtimeDetector] 기본 방식으로 카메라 열기")
+            if self.is_linux and isinstance(self.camera_source, int):
+                self.cap = cv2.VideoCapture(self.camera_source, cv2.CAP_V4L2)
+                print(f"[RealtimeDetector] Linux: V4L2 백엔드로 카메라 {self.camera_source} 열기")
+            else:
+                self.cap = cv2.VideoCapture(self.camera_source)
         
-        if not self.cap.isOpened():
+        if not self.cap or not self.cap.isOpened():
             print(f"[RealtimeDetector] ❌ 카메라를 열 수 없습니다: {self.camera_source}")
             return
         
