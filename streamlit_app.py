@@ -268,12 +268,18 @@ if st.sidebar.button("🔍 카메라 자동 검색"):
     if st.session_state.available_cameras:
         st.sidebar.success(f"✅ {len(st.session_state.available_cameras)}개의 카메라 발견!")
     else:
-        st.sidebar.error("❌ 사용 가능한 카메라를 찾지 못했습니다.")
+        st.sidebar.warning("⚠️ 카메라를 찾을 수 없습니다")
 
-# 카메라 선택
-camera_type = st.sidebar.radio("소스 타입", ["웹캠", "비디오 파일"])
+# 카메라 소스 타입 선택
+camera_type = st.sidebar.radio(
+    "소스 타입", 
+    ["USB 웹캠", "RTSP 스트림", "HTTP 스트림", "비디오 파일", "기타"],
+    help="다양한 카메라 입력 소스를 지원합니다"
+)
 
-if camera_type == "웹캠":
+if camera_type == "USB 웹캠":
+    config['camera_source_type'] = "usb"
+    
     if st.session_state.available_cameras:
         # 검색된 카메라 목록에서 선택
         camera_options = format_camera_list_for_ui(st.session_state.available_cameras)
@@ -295,14 +301,67 @@ if camera_type == "웹캠":
         config['camera_source'] = st.sidebar.number_input(
             "웹캠 번호",
             0, 10, 
-            int(config.get('camera_source', 0))
+            int(config.get('camera_source', 0)) if isinstance(config.get('camera_source'), int) else 0
         )
         st.sidebar.info("💡 '카메라 자동 검색' 버튼을 클릭하면 사용 가능한 카메라를 자동으로 찾습니다.")
-else:
+
+elif camera_type == "RTSP 스트림":
+    config['camera_source_type'] = "rtsp"
+    config['camera_source'] = st.sidebar.text_input(
+        "RTSP URL",
+        config.get('camera_source', 'rtsp://admin:password@192.168.1.100:554/stream1') 
+        if isinstance(config.get('camera_source'), str) and config.get('camera_source', '').startswith('rtsp://') 
+        else 'rtsp://admin:password@192.168.1.100:554/stream1',
+        help="예: rtsp://username:password@ip:port/stream"
+    )
+    st.sidebar.caption("💡 예제:")
+    st.sidebar.code("rtsp://admin:1234@192.168.1.100:554/stream1", language="text")
+    st.sidebar.info("⚠️ RTSP는 네트워크 지연이 있을 수 있습니다. detection_interval을 조정하세요.")
+
+elif camera_type == "HTTP 스트림":
+    config['camera_source_type'] = "http"
+    config['camera_source'] = st.sidebar.text_input(
+        "HTTP Stream URL",
+        config.get('camera_source', 'http://192.168.1.100:8080/video') 
+        if isinstance(config.get('camera_source'), str) and config.get('camera_source', '').startswith('http') 
+        else 'http://192.168.1.100:8080/video',
+        help="HTTP MJPEG 스트림 URL"
+    )
+    st.sidebar.caption("💡 예제:")
+    st.sidebar.code("http://192.168.1.100:8080/video", language="text")
+
+elif camera_type == "비디오 파일":
+    config['camera_source_type'] = "file"
     config['camera_source'] = st.sidebar.text_input(
         "비디오 파일 경로",
-        config.get('camera_source', 'video.mp4') if isinstance(config.get('camera_source'), str) else 'video.mp4'
+        config.get('camera_source', 'video.mp4') 
+        if isinstance(config.get('camera_source'), str) and not config.get('camera_source', '').startswith(('rtsp://', 'http://'))
+        else 'video.mp4',
+        help="로컬 비디오 파일 경로 (.mp4, .avi, .mkv 등)"
     )
+    st.sidebar.caption("💡 지원 형식: MP4, AVI, MKV, MOV 등")
+
+else:  # 기타
+    config['camera_source_type'] = st.sidebar.selectbox(
+        "고급 소스 타입",
+        ["image_sequence", "gstreamer"],
+        help="이미지 시퀀스 또는 GStreamer 파이프라인"
+    )
+    
+    if config['camera_source_type'] == "image_sequence":
+        config['camera_source'] = st.sidebar.text_input(
+            "이미지 시퀀스 패턴",
+            config.get('camera_source', '/path/to/images/frame_%04d.jpg'),
+            help="예: /path/to/images/frame_%04d.jpg"
+        )
+        st.sidebar.caption("💡 %04d는 숫자 형식 (0001, 0002, ...)")
+    else:  # gstreamer
+        config['camera_source'] = st.sidebar.text_area(
+            "GStreamer 파이프라인",
+            config.get('camera_source', 'videotestsrc ! videoconvert ! appsink'),
+            help="커스텀 GStreamer 파이프라인"
+        )
+        st.sidebar.caption("💡 GStreamer가 설치되어 있어야 합니다")
 
 # 검출 임계값
 st.sidebar.subheader("🎯 검출 설정")

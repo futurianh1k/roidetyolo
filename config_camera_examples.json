@@ -1,0 +1,90 @@
+{
+  "_comment": "카메라 소스 설정 예제 모음",
+  
+  "examples": [
+    {
+      "name": "USB 카메라 (기본)",
+      "description": "로컬 USB 웹캠 사용",
+      "camera_source": 0,
+      "camera_source_type": "usb"
+    },
+    {
+      "name": "USB 카메라 (두 번째)",
+      "description": "두 번째 USB 카메라 사용",
+      "camera_source": 1,
+      "camera_source_type": "usb"
+    },
+    {
+      "name": "RTSP 스트림 (TCP)",
+      "description": "IP 카메라 RTSP 스트림",
+      "camera_source": "rtsp://admin:password@192.168.1.100:554/stream1",
+      "camera_source_type": "rtsp"
+    },
+    {
+      "name": "RTSP 스트림 (공개 테스트)",
+      "description": "공개 RTSP 테스트 스트림",
+      "camera_source": "rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mp4",
+      "camera_source_type": "rtsp"
+    },
+    {
+      "name": "HTTP MJPEG 스트림",
+      "description": "HTTP MJPEG 스트림",
+      "camera_source": "http://192.168.1.100:8080/video",
+      "camera_source_type": "http"
+    },
+    {
+      "name": "비디오 파일",
+      "description": "로컬 비디오 파일 재생",
+      "camera_source": "/path/to/video.mp4",
+      "camera_source_type": "file"
+    },
+    {
+      "name": "이미지 시퀀스",
+      "description": "연속된 이미지 파일",
+      "camera_source": "/path/to/images/frame_%04d.jpg",
+      "camera_source_type": "image_sequence"
+    },
+    {
+      "name": "GStreamer 파이프라인",
+      "description": "커스텀 GStreamer 파이프라인",
+      "camera_source": "videotestsrc ! videoconvert ! appsink",
+      "camera_source_type": "gstreamer"
+    },
+    {
+      "name": "V4L2 장치 (Linux)",
+      "description": "Linux V4L2 장치 직접 지정",
+      "camera_source": "/dev/video0",
+      "camera_source_type": "file"
+    }
+  ],
+  
+  "recommended_settings": {
+    "usb_camera": {
+      "frame_width": 1280,
+      "frame_height": 720,
+      "confidence_threshold": 0.5
+    },
+    "rtsp_stream": {
+      "frame_width": 1920,
+      "frame_height": 1080,
+      "confidence_threshold": 0.5,
+      "detection_interval_seconds": 1.0,
+      "_note": "RTSP는 네트워크 지연이 있을 수 있으므로 detection_interval을 조정하세요"
+    },
+    "video_file": {
+      "frame_width": 1280,
+      "frame_height": 720,
+      "confidence_threshold": 0.5,
+      "detection_interval_seconds": 0.5,
+      "_note": "비디오 파일은 실시간이 아니므로 더 빠른 검출 간격 사용 가능"
+    }
+  },
+  
+  "troubleshooting": {
+    "rtsp_connection_failed": "RTSP 연결 실패 시 URL, 사용자명, 비밀번호를 확인하세요",
+    "rtsp_lag": "RTSP 지연이 심한 경우 detection_interval_seconds를 늘리세요 (예: 2.0)",
+    "usb_camera_not_found": "USB 카메라를 찾을 수 없는 경우 camera_source를 1, 2 등으로 변경해보세요",
+    "video_file_error": "비디오 파일 오류 시 파일 경로와 코덱을 확인하세요"
+  }
+}
+

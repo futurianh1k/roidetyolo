@@ -11,6 +11,7 @@
 - **⏱️ 체류 시간 측정**: 각 ROI에서 사람의 체류 시간 추적
 - **📤 자동 이벤트 전송**: 조건 충족 시 API 엔드포인트로 이벤트 자동 전송
 - **🔄 실시간 모니터링**: 검출 상태 실시간 시각화
+- **📹 다양한 카메라 소스 지원**: USB 웹캠, RTSP/HTTP 스트림, 비디오 파일, 이미지 시퀀스, GStreamer 파이프라인
 
 ## 🎮 동작 방식
 
@@ -93,7 +94,8 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8m.pt
 | 항목 | 설명 | 기본값 |
 |------|------|--------|
 | `yolo_model` | YOLO 모델 파일명 | yolov8n.pt |
-| `camera_source` | 카메라 소스 (0: 웹캠, 또는 비디오 파일 경로) | 0 |
+| `camera_source` | 카메라 소스 (USB 번호, RTSP URL, 파일 경로 등) | 0 |
+| `camera_source_type` | 카메라 소스 타입 (usb, rtsp, http, file, image_sequence, gstreamer) | 자동 감지 |
 | `frame_width` | 프레임 너비 | 1280 |
 | `frame_height` | 프레임 높이 | 720 |
 | `confidence_threshold` | 검출 신뢰도 임계값 (0.0~1.0) | 0.5 |
@@ -134,6 +136,57 @@ python roi_selector.py
 ```
 
 이 기능은 필요 시 별도로 구현할 수 있습니다.
+
+## 📹 카메라 소스 설정
+
+이 프로젝트는 다양한 카메라 입력 소스를 지원합니다:
+
+### 지원하는 카메라 소스
+
+| 소스 타입 | 설명 | 예시 |
+|-----------|------|------|
+| **USB 웹캠** | 로컬 USB 카메라 | `camera_source: 0` |
+| **RTSP 스트림** | IP 카메라 RTSP 스트림 | `camera_source: "rtsp://admin:1234@192.168.1.100:554/stream1"` |
+| **HTTP 스트림** | HTTP MJPEG 스트림 | `camera_source: "http://192.168.1.100:8080/video"` |
+| **비디오 파일** | 로컬 비디오 파일 | `camera_source: "./videos/sample.mp4"` |
+| **이미지 시퀀스** | 연속된 이미지 파일 | `camera_source: "./images/frame_%04d.jpg"` |
+| **GStreamer** | 커스텀 GStreamer 파이프라인 | `camera_source: "videotestsrc ! videoconvert ! appsink"` |
+
+### 설정 예시
+
+**USB 웹캠**:
+```json
+{
+  "camera_source": 0,
+  "camera_source_type": "usb"
+}
+```
+
+**RTSP IP 카메라**:
+```json
+{
+  "camera_source": "rtsp://admin:password@192.168.1.100:554/stream1",
+  "camera_source_type": "rtsp"
+}
+```
+
+**비디오 파일**:
+```json
+{
+  "camera_source": "./videos/sample.mp4",
+  "camera_source_type": "file"
+}
+```
+
+### Streamlit UI에서 설정
+
+Streamlit 앱을 실행하면 좌측 사이드바에서 카메라 소스를 쉽게 선택할 수 있습니다:
+
+1. "📹 카메라" 섹션 찾기
+2. "소스 타입" 선택 (USB 웹캠, RTSP 스트림, HTTP 스트림, 비디오 파일, 기타)
+3. 각 타입에 맞는 설정 입력
+
+**더 자세한 내용은 [CAMERA_SOURCE_GUIDE.md](./CAMERA_SOURCE_GUIDE.md)를 참조하세요.**
 
 ## 🏃 실행 방법
 
@@ -304,6 +357,26 @@ yolo export model=yolov8n.pt format=pytorch
 - API 엔드포인트에 인증이 필요한 경우 코드 수정 필요
 - HTTPS 사용 권장
 - 민감한 정보는 환경 변수로 관리
+
+## 📚 관련 문서
+
+### 핵심 가이드
+- 📹 **[CAMERA_SOURCE_GUIDE.md](./CAMERA_SOURCE_GUIDE.md)** - 카메라 소스 다변화 가이드 (USB, RTSP, HTTP, 파일 등)
+- 📐 **[CUSTOM_ROI_GUIDE.md](./CUSTOM_ROI_GUIDE.md)** - ROI 영역 편집 가이드
+- 😊 **[FACE_ANALYSIS_INTEGRATION.md](./FACE_ANALYSIS_INTEGRATION.md)** - 얼굴 분석 통합 가이드
+
+### 설정 및 최적화
+- ⚡ **[PERFORMANCE_OPTIMIZATION.md](./PERFORMANCE_OPTIMIZATION.md)** - 성능 최적화 가이드
+- 🖥️ **[PLATFORM_COMPATIBILITY.md](./PLATFORM_COMPATIBILITY.md)** - 플랫폼 호환성 가이드
+- 🔧 **[JETSON_SETUP.md](./JETSON_SETUP.md)** - Jetson 설치 및 설정
+
+### 예제 설정 파일
+- 📝 **[config_camera_examples.json](./config_camera_examples.json)** - 다양한 카메라 소스 예제
+- 📝 **[config_polygon_example.json](./config_polygon_example.json)** - Polygon ROI 예제
+
+### 문제 해결
+- 🐛 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** - 문제 해결 가이드
+- 🔍 **[BUG_FIXES.md](./BUG_FIXES.md)** - 버그 수정 내역
 
 ## 📄 라이선스
 
