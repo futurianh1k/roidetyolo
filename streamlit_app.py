@@ -573,7 +573,7 @@ with tab1:
             else:
                 # 일반 이미지 표시 (PIL Image로 변환하여 미디어 오류 방지)
                 pil_image_roi = Image.fromarray(frame_rgb)
-                st.image(pil_image_roi, use_container_width=True)
+                st.image(pil_image_roi, use_column_width=True)
                 
                 if st.session_state.custom_roi_mode and not IMAGE_COORDINATES_AVAILABLE:
                     st.warning("⚠️ 마우스 클릭 기능을 사용하려면 `pip install streamlit-image-coordinates`를 실행하세요.")
@@ -820,7 +820,7 @@ with tab2:
                     
                     # PIL Image로 변환 (미디어 파일 오류 방지)
                     pil_image = Image.fromarray(frame_rgb)
-                    video_placeholder.image(pil_image, width="stretch")
+                    video_placeholder.image(pil_image, use_column_width=True)
                     
                     # FPS 정보
                     fps_placeholder.caption(f"FPS: {st.session_state.detector.fps:.1f}")
@@ -1104,7 +1104,9 @@ with tab4:
                                 "imageUrl": image_url,
                                 "status": "SENT",
                                 "createdAt": timestamp,
-                                "watchId": test_watch_id
+                                "watchId": test_watch_id,
+                                "senderId" : test_sender_id,
+                                'note': test_note if test_note else '(empty)',
                             }
                             
                             response = requests.request(
