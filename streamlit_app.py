@@ -699,9 +699,36 @@ with tab2:
                     st.session_state.detection_running = True
                     st.rerun()
         else:
-            if st.button("⏸️ 검출 중지", type="secondary"):
-                st.session_state.detection_running = False
-                st.rerun()
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("⏸️ 검출 중지", type="secondary"):
+                    st.session_state.detection_running = False
+                    st.rerun()
+            with col_btn2:
+                # 수동 테스트 API 전송 버튼
+                if st.button("🧪 테스트 API 전송", type="primary", help="현재 프레임으로 테스트 API 전송 (원본 이미지, ROI 제외)"):
+                    if st.session_state.detector is not None:
+                        # 첫 번째 ROI 선택
+                        if len(st.session_state.roi_regions) > 0:
+                            test_roi_id = st.session_state.roi_regions[0]['id']
+                            # 원본 프레임 가져오기 (ROI 그리기 전)
+                            current_frame = st.session_state.detector.get_latest_frame(original=True)
+                            
+                            # API 전송
+                            try:
+                                st.session_state.detector.send_realtime_api(
+                                    roi_id=test_roi_id,
+                                    event_type='absent',
+                                    reason='Manual test API call',
+                                    frame=current_frame
+                                )
+                                st.success(f"✅ 테스트 API 전송 완료! (ROI: {test_roi_id}, 원본 이미지)")
+                            except Exception as e:
+                                st.error(f"❌ API 전송 실패: {e}")
+                        else:
+                            st.warning("⚠️ ROI 영역이 없습니다.")
+                    else:
+                        st.warning("⚠️ 검출기가 초기화되지 않았습니다.")
         
         # 검출 화면 표시 영역
         if st.session_state.detection_running:
@@ -1038,7 +1065,11 @@ with tab4:
                             # URL에 watchId 추가
                             api_url = selected_api['url']
                             if '{watchId}' in api_url:
+                                # 플레이스홀더가 있으면 교체
                                 api_url = api_url.replace('{watchId}', test_watch_id)
+                            elif test_watch_id in api_url:
+                                # 이미 watchId가 URL에 포함되어 있으면 그대로 사용
+                                pass
                             else:
                                 # watchId가 URL에 없으면 path parameter로 추가
                                 if not api_url.endswith('/'):

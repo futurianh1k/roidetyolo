@@ -99,6 +99,7 @@ class RealtimeDetector:
         
         # 프레임 및 상태 큐 (Streamlit과 통신)
         self.frame_queue = queue.Queue(maxsize=2)  # 최대 2개 프레임만 버퍼링
+        self.original_frame_queue = queue.Queue(maxsize=2)  # 원본 프레임 큐 (ROI/라벨 없음)
         self.stats_queue = queue.Queue(maxsize=10)
         self.event_queue = queue.Queue(maxsize=50)
         
@@ -134,42 +135,80 @@ class RealtimeDetector:
         return False
     
     def send_realtime_api(self, roi_id, event_type, reason, frame=None):
-        """실시간 API 전송 (SAD 표정, 부재 상태)"""
+        """실시간 API 전송 (SAD 표정, 부재 상태) - 현재 스냅샷 이미지 포함"""
         if not self.api_enabled:
             return
         
         try:
-            # API 페이로드 생성
-            payload = {
-                'eventId': f"{roi_id}_{event_type}_{int(time.time())}",
-                'roi_id': roi_id,
-                'status': event_type,
-                'reason': reason,
-                'timestamp': datetime.now().isoformat(),
-                'watch_id': self.config.get('watch_id', 'unknown'),
-                'sender_id': self.config.get('sender_id', 'yolo_detector'),
-                'note': self.config.get('note', ''),
-                'method': self.config.get('method', 'realtime_detection')
-            }
+            import uuid
+            import base64
+            from io import BytesIO
             
-            # 이미지 포함 여부
-            if self.config.get('include_image_url', False) and frame is not None:
-                # 이미지 처리 로직 (필요시 추가)
-                payload['imageUrl'] = f"{self.config.get('image_base_url', '')}/placeholder.jpg"
+            # UUID 생성
+            event_id = str(uuid.uuid4())
+            
+            # FCM Message ID 생성
+            fcm_project = self.config.get('fcm_project_id', 'emergency-alert-system-f27e6')
+            fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
+            
+            # API 페이로드 생성 (요청한 형식)
+            payload = {
+                'eventId': event_id,
+                'fcmMessageId': fcm_message_id,
+                'imageUrl': None,
+                'status': 'SENT',
+                'createdAt': datetime.now().isoformat(),
+                'watchId': self.config.get('watch_id', 'unknown'),
+                'senderId': self.config.get('sender_id', 'test-user'),
+                'note': self.config.get('note', '응급상황 메시지')
+            }
             
             print(f"[RealtimeDetector] 🚨 실시간 API 전송: {roi_id} - {reason}")
             
-            # API 전송
-            response = requests.post(
-                self.api_endpoint,
-                json=payload,
-                timeout=5
-            )
+            # 이미지가 있으면 multipart/form-data로 전송
+            if frame is not None:
+                # 프레임을 JPEG로 인코딩
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                image_bytes = BytesIO(buffer.tobytes())
+                
+                # Multipart form data 생성
+                files = {
+                    'image': ('snapshot.jpg', image_bytes, 'image/jpeg')
+                }
+                
+                # Form data (JSON 데이터를 form field로)
+                form_data = {
+                    'eventId': payload['eventId'],
+                    'fcmMessageId': payload['fcmMessageId'],
+                    'status': payload['status'],
+                    'createdAt': payload['createdAt'],
+                    'watchId': payload['watchId'],
+                    'senderId': payload['senderId'],
+                    'note': payload['note']
+                }
+                
+                # API 전송 (multipart/form-data)
+                response = requests.post(
+                    self.api_endpoint,
+                    data=form_data,
+                    files=files,
+                    timeout=10
+                )
+            else:
+                # 이미지 없으면 JSON으로 전송
+                response = requests.post(
+                    self.api_endpoint,
+                    json=payload,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=10
+                )
             
             if response.status_code in [200, 201]:
                 print(f"[RealtimeDetector] ✅ API 전송 성공: {response.status_code}")
+                print(f"[RealtimeDetector] 📤 전송된 데이터: {payload}")
             else:
                 print(f"[RealtimeDetector] ⚠️ API 응답 오류: {response.status_code}")
+                print(f"[RealtimeDetector] 응답 내용: {response.text}")
                 
         except requests.exceptions.Timeout:
             print(f"[RealtimeDetector] ⏱️ API 타임아웃")
@@ -177,8 +216,10 @@ class RealtimeDetector:
             print(f"[RealtimeDetector] ❌ API 연결 실패")
         except Exception as e:
             print(f"[RealtimeDetector] ❌ API 전송 오류: {e}")
+            import traceback
+            traceback.print_exc()
     
-    def update_roi_state(self, roi_id, person_in_roi):
+    def update_roi_state(self, roi_id, person_in_roi, frame=None):
         """ROI 상태 업데이트 및 API 이벤트 전송 판단"""
         state = self.roi_states[roi_id]
         current_time = time.time()
@@ -223,11 +264,12 @@ class RealtimeDetector:
                     if state['last_status_sent'] == 'present':
                         state['last_status_sent'] = 'absent'
                         
-                        # 🚨 실시간 API 전송 (부재 상태)
+                        # 🚨 실시간 API 전송 (부재 상태) - 현재 프레임 포함
                         self.send_realtime_api(
                             roi_id=roi_id,
                             event_type='absent',
-                            reason='Person absence detected'
+                            reason='Person absence detected',
+                            frame=frame
                         )
                         
                         # 이벤트 큐에 전송
@@ -363,11 +405,13 @@ class RealtimeDetector:
         
         return frame_copy
     
-    def process_frame(self):
+    def process_frame(self, frame=None):
         """단일 프레임 처리 (YOLO 추론은 설정된 간격마다만 수행)"""
-        ret, frame = self.cap.read()
-        if not ret:
-            return None
+        # 프레임이 제공되지 않으면 카메라에서 읽기
+        if frame is None:
+            ret, frame = self.cap.read()
+            if not ret:
+                return None
         
         current_time = time.time()
         detections = []
@@ -479,8 +523,8 @@ class RealtimeDetector:
             # 얼굴 분석 결과 저장
             self.last_face_results = face_analysis_results
             
-            # ROI 상태 업데이트
-            self.update_roi_state(roi_id, person_in_roi)
+            # ROI 상태 업데이트 (현재 프레임 전달)
+            self.update_roi_state(roi_id, person_in_roi, frame=frame)
             
             # 검출 결과 저장 (다음 프레임들에서 재사용)
             self.last_detections = detections
@@ -520,20 +564,37 @@ class RealtimeDetector:
         print("[RealtimeDetector] ✅ 카메라 열림 성공")
         
         while self.running:
-            frame = self.process_frame()
-            
-            if frame is None:
+            # 원본 프레임 읽기
+            ret, original_frame = self.cap.read()
+            if not ret or original_frame is None:
                 print("[RealtimeDetector] 프레임 읽기 실패")
                 break
             
-            # 프레임 큐에 전송 (큐가 가득 차면 오래된 프레임 제거)
+            # 프레임 처리 (검출 및 시각화)
+            annotated_frame = self.process_frame(original_frame)
+            
+            if annotated_frame is None:
+                continue
+            
+            # 시각화된 프레임 큐에 전송 (UI 표시용)
             try:
-                self.frame_queue.put_nowait(frame)
+                self.frame_queue.put_nowait(annotated_frame)
             except queue.Full:
                 # 큐가 가득 차면 오래된 프레임 제거 후 새 프레임 추가
                 try:
                     self.frame_queue.get_nowait()
-                    self.frame_queue.put_nowait(frame)
+                    self.frame_queue.put_nowait(annotated_frame)
+                except:
+                    pass
+            
+            # 원본 프레임 큐에 전송 (테스트 API 전송용 - 순수 카메라 이미지)
+            try:
+                self.original_frame_queue.put_nowait(original_frame.copy())
+            except queue.Full:
+                # 큐가 가득 차면 오래된 프레임 제거 후 새 프레임 추가
+                try:
+                    self.original_frame_queue.get_nowait()
+                    self.original_frame_queue.put_nowait(original_frame.copy())
                 except:
                     pass
         
@@ -555,10 +616,18 @@ class RealtimeDetector:
             self.thread.join(timeout=2)
         print("[RealtimeDetector] 중지됨")
     
-    def get_latest_frame(self):
-        """최신 프레임 가져오기 (논블로킹)"""
+    def get_latest_frame(self, original=False):
+        """
+        최신 프레임 가져오기 (논블로킹)
+        
+        Args:
+            original: True면 원본 프레임 (ROI/라벨 없음), False면 시각화된 프레임
+        """
         try:
-            return self.frame_queue.get_nowait()
+            if original:
+                return self.original_frame_queue.get_nowait()
+            else:
+                return self.frame_queue.get_nowait()
         except queue.Empty:
             return None
     
