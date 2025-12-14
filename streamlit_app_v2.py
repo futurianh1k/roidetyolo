@@ -778,6 +778,82 @@ with tab_browser:
             f"💾 사용량: {storage_info['used_mb']:.1f} / {storage_info['max_mb']} MB"
         )
 
+        # 세션 관리 섹션
+        with st.expander("🗑️ 세션 관리 (일괄 삭제)", expanded=False):
+            all_sessions = storage.list_sessions()
+
+            if not all_sessions:
+                st.info("저장된 세션이 없습니다")
+            else:
+                st.markdown(f"**총 {len(all_sessions)}개 세션**")
+
+                # 세션 선택을 위한 상태 초기화
+                if "sessions_to_delete" not in st.session_state:
+                    st.session_state.sessions_to_delete = set()
+
+                # 전체 선택/해제
+                col_select_all, col_delete_all = st.columns(2)
+                with col_select_all:
+                    if st.button("☑️ 전체 선택"):
+                        st.session_state.sessions_to_delete = {
+                            s["path"] for s in all_sessions
+                        }
+                        st.rerun()
+                with col_delete_all:
+                    if st.button("⬜ 전체 해제"):
+                        st.session_state.sessions_to_delete = set()
+                        st.rerun()
+
+                st.markdown("---")
+
+                # 세션 목록 (체크박스)
+                for session in all_sessions:
+                    session_path = session["path"]
+                    start_time = session.get("start_time", "")
+                    source_type = session.get("source_type", "unknown")
+
+                    # 시간 포맷팅
+                    if start_time:
+                        try:
+                            dt = datetime.fromisoformat(start_time)
+                            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            time_str = session["session_id"]
+                    else:
+                        time_str = session["session_id"]
+
+                    label = f"📂 {source_type} | {time_str} | {session['total_frames']}장 | {session['size_mb']}MB"
+
+                    is_selected = session_path in st.session_state.sessions_to_delete
+                    if st.checkbox(
+                        label,
+                        value=is_selected,
+                        key=f"session_check_{session_path}",
+                    ):
+                        st.session_state.sessions_to_delete.add(session_path)
+                    else:
+                        st.session_state.sessions_to_delete.discard(session_path)
+
+                st.markdown("---")
+
+                # 선택된 세션 삭제
+                selected_count = len(st.session_state.sessions_to_delete)
+                if selected_count > 0:
+                    st.warning(f"⚠️ {selected_count}개 세션이 선택됨")
+
+                    if st.button(
+                        f"🗑️ 선택된 {selected_count}개 세션 삭제",
+                        type="primary",
+                    ):
+                        deleted_count = 0
+                        for session_path in list(st.session_state.sessions_to_delete):
+                            if storage.delete_session(session_path):
+                                deleted_count += 1
+
+                        st.session_state.sessions_to_delete = set()
+                        st.success(f"✅ {deleted_count}개 세션 삭제 완료!")
+                        st.rerun()
+
         st.divider()
 
         # 3단 레이아웃: 날짜/소스/세션 선택 | 이미지 그리드 | 상세 정보
