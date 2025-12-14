@@ -38,6 +38,21 @@ except ImportError:
     FACE_ANALYZER_AVAILABLE = False
     print("[RealtimeDetector] ⚠️  FaceAnalyzer 모듈 없음 - 얼굴 분석 비활성화")
 
+# HTTP POST 이미지 수신 서버 임포트
+try:
+    from image_receiver import (
+        get_image_queue,
+        get_last_image,
+        start_receiver_server,
+        stop_receiver_server,
+    )
+
+    IMAGE_RECEIVER_AVAILABLE = True
+    print("[RealtimeDetector] ✅ ImageReceiver 모듈 로드 완료")
+except ImportError:
+    IMAGE_RECEIVER_AVAILABLE = False
+    print("[RealtimeDetector] ⚠️  ImageReceiver 모듈 없음 - HTTP POST 수신 비활성화")
+
 
 class RealtimeDetector:
     """
@@ -662,6 +677,44 @@ class RealtimeDetector:
         """백그라운드 검출 루프"""
         print("[RealtimeDetector] 검출 시작")
 
+        # HTTP_POST 소스 타입인 경우 이미지 수신 서버 사용
+        use_http_post = (
+            CAMERA_UTILS_AVAILABLE
+            and self.camera_source_type == CameraSourceType.HTTP_POST
+        )
+
+        if use_http_post:
+            # HTTP POST 이미지 수신 모드
+            if not IMAGE_RECEIVER_AVAILABLE:
+                print("[RealtimeDetector] ❌ ImageReceiver 모듈이 없습니다")
+                return
+
+            # 수신 서버 포트 가져오기 (camera_source에서)
+            receiver_port = 8502  # 기본값
+            if isinstance(self.camera_source, str) and ":" in self.camera_source:
+                try:
+                    receiver_port = int(self.camera_source.split(":")[-1])
+                except:
+                    pass
+
+            print(f"[RealtimeDetector] HTTP POST 수신 모드 - 포트 {receiver_port}")
+            start_receiver_server(host="0.0.0.0", port=receiver_port)
+
+            # 이미지 큐 가져오기
+            image_queue = get_image_queue()
+
+            print("[RealtimeDetector] ✅ HTTP POST 수신 서버 시작됨")
+            print(
+                f"[RealtimeDetector] 📷 이미지 업로드 URL: http://0.0.0.0:{receiver_port}/upload/image"
+            )
+
+            # HTTP POST 모드 검출 루프
+            self._run_http_post_loop(image_queue)
+
+            # 종료 시 서버 중지
+            stop_receiver_server()
+            return
+
         # 카메라 열기 (CameraSourceManager 사용)
         if CAMERA_UTILS_AVAILABLE:
             print(f"[RealtimeDetector] CameraSourceManager로 카메라 열기")
@@ -745,6 +798,82 @@ class RealtimeDetector:
 
         self.cap.release()
         print("[RealtimeDetector] 검출 종료")
+
+    def _run_http_post_loop(self, image_queue):
+        """
+        HTTP POST 이미지 수신 모드의 검출 루프
+
+        CoreS3 장비가 주기적으로 POST하는 이미지를 큐에서 가져와서 처리
+        """
+        print("[RealtimeDetector] HTTP POST 검출 루프 시작")
+
+        rois_denormalized = False
+        last_frame = None
+        no_frame_count = 0
+
+        while self.running:
+            # 이미지 큐에서 프레임 가져오기 (타임아웃 사용)
+            try:
+                original_frame = image_queue.get(timeout=0.5)
+                no_frame_count = 0
+            except:
+                no_frame_count += 1
+
+                # 마지막 프레임이 있으면 재사용 (UI 업데이트 유지)
+                if last_frame is not None:
+                    original_frame = last_frame.copy()
+                else:
+                    # 프레임이 없으면 대기
+                    if no_frame_count % 10 == 0:
+                        print(
+                            f"[RealtimeDetector] 이미지 대기 중... ({no_frame_count * 0.5:.1f}초)"
+                        )
+                    continue
+
+            # 프레임 저장 (재사용용)
+            last_frame = original_frame.copy()
+
+            # 첫 프레임에서 ROI를 현재 해상도에 맞게 변환
+            if not rois_denormalized:
+                frame_height, frame_width = original_frame.shape[:2]
+                print(
+                    f"[RealtimeDetector] HTTP POST 프레임 해상도: {frame_width}x{frame_height}"
+                )
+                self.roi_regions = denormalize_rois(
+                    self.roi_regions, frame_width, frame_height
+                )
+                print(
+                    f"[RealtimeDetector] ROI {len(self.roi_regions)}개 해상도 적응 완료"
+                )
+                rois_denormalized = True
+
+            # 프레임 처리 (검출 및 시각화)
+            annotated_frame = self.process_frame(original_frame)
+
+            if annotated_frame is None:
+                continue
+
+            # 시각화된 프레임 큐에 전송 (UI 표시용)
+            try:
+                self.frame_queue.put_nowait(annotated_frame)
+            except queue.Full:
+                try:
+                    self.frame_queue.get_nowait()
+                    self.frame_queue.put_nowait(annotated_frame)
+                except:
+                    pass
+
+            # 원본 프레임 큐에 전송
+            try:
+                self.original_frame_queue.put_nowait(original_frame.copy())
+            except queue.Full:
+                try:
+                    self.original_frame_queue.get_nowait()
+                    self.original_frame_queue.put_nowait(original_frame.copy())
+                except:
+                    pass
+
+        print("[RealtimeDetector] HTTP POST 검출 루프 종료")
 
     def start(self):
         """백그라운드 스레드 시작"""

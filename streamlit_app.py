@@ -327,7 +327,7 @@ if st.sidebar.button("🔍 카메라 자동 검색"):
 # 카메라 소스 타입 선택
 camera_type = st.sidebar.radio(
     "소스 타입",
-    ["USB 웹캠", "RTSP 스트림", "HTTP 스트림", "비디오 파일", "기타"],
+    ["USB 웹캠", "RTSP 스트림", "HTTP 스트림", "HTTP POST 수신", "비디오 파일", "기타"],
     help="다양한 카메라 입력 소스를 지원합니다",
 )
 
@@ -402,6 +402,48 @@ elif camera_type == "HTTP 스트림":
     )
     st.sidebar.caption("💡 예제:")
     st.sidebar.code("http://192.168.1.100:8080/video", language="text")
+
+elif camera_type == "HTTP POST 수신":
+    # CoreS3 등 장비가 주기적으로 1장씩 POST하는 이미지를 수신
+    config["camera_source_type"] = "http_post"
+
+    receiver_port = st.sidebar.number_input(
+        "수신 서버 포트",
+        min_value=1024,
+        max_value=65535,
+        value=8502,
+        help="이미지를 수신할 포트 번호",
+    )
+    config["camera_source"] = f":{receiver_port}"  # 포트 정보 저장
+
+    st.sidebar.info(
+        f"📷 **이미지 수신 모드**\n\n"
+        f"장비가 아래 URL로 이미지를 POST하면 자동 처리됩니다:\n\n"
+        f"`POST http://서버IP:{receiver_port}/upload/image`"
+    )
+
+    st.sidebar.caption("💡 CoreS3 펌웨어 설정:")
+    st.sidebar.code(
+        f"Sink URL: http://서버IP:{receiver_port}/upload/image\n"
+        f"Content-Type: multipart/form-data",
+        language="text",
+    )
+
+    # 수신 상태 표시 (검출 중일 때)
+    if st.session_state.is_detection_running:
+        try:
+            from image_receiver import get_stats
+
+            stats = get_stats()
+            if stats["received_count"] > 0:
+                st.sidebar.success(
+                    f"✅ 수신 중: {stats['received_count']}장\n"
+                    f"마지막: {stats.get('last_image_size', 'N/A')}"
+                )
+            else:
+                st.sidebar.warning("⏳ 이미지 대기 중...")
+        except ImportError:
+            pass
 
 elif camera_type == "비디오 파일":
     config["camera_source_type"] = "file"
