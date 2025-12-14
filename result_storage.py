@@ -149,6 +149,43 @@ class ResultStorage:
             print(f"[ResultStorage] 새 세션 시작: {self.session_path}")
             return str(self.session_path)
 
+    def end_session(self):
+        """
+        현재 세션 종료
+
+        세션 정보를 초기화하고 메타데이터를 최종 저장합니다.
+        """
+        with self._lock:
+            if self.session_path is None:
+                return
+
+            # 최종 메타데이터 저장
+            if self._metadata:
+                self._metadata.last_updated = datetime.now().isoformat()
+                self._save_metadata()
+
+            session_info = (
+                f"{self.source_type}/{self.session_id}"
+                if self.source_type
+                else "unknown"
+            )
+            total_frames = self.frame_counter
+
+            # 세션 정보 초기화
+            self.session_id = None
+            self.session_path = None
+            self.source_type = None
+            self.source_name = None
+            self.session_start_time = None
+            self.frame_counter = 0
+            self._metadata = None
+
+            print(f"[ResultStorage] 세션 종료: {session_info} (총 {total_frames}장)")
+
+    def is_session_active(self) -> bool:
+        """세션 활성 상태 확인"""
+        return self.session_path is not None
+
     def save_detection(
         self,
         annotated_frame: np.ndarray,

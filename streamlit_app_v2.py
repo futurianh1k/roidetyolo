@@ -163,10 +163,15 @@ def change_source(source_type: str, source, **options):
     st.session_state.current_source_type = source_type
     st.session_state.current_source = source
 
-    # 새 저장 세션 시작
-    if st.session_state.result_storage and source_type != "none":
-        source_name = str(source) if source else source_type
-        st.session_state.result_storage.start_session(source_type, source_name)
+    # 저장 세션 관리
+    if st.session_state.result_storage:
+        if source_type == "none":
+            # 소스 없음 선택 시 세션 종료
+            st.session_state.result_storage.end_session()
+        else:
+            # 새 소스 선택 시 새 세션 시작
+            source_name = str(source) if source else source_type
+            st.session_state.result_storage.start_session(source_type, source_name)
 
     return True
 
