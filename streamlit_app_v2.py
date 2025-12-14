@@ -16,6 +16,8 @@ import streamlit as st
 import cv2
 import numpy as np
 import time
+import uuid
+import requests
 from datetime import datetime
 from pathlib import Path
 
@@ -89,7 +91,17 @@ def init_session_state():
             "enable_face_analysis": True,
             "storage_base_path": "./detection_results",
             "storage_max_mb": 100,
+            # API 설정
+            "api_endpoints": [],
+            "watch_id": "",
+            "sender_id": "streamlit-app",
+            "api_send_on_absence": False,  # 부재 감지 시 API 전송
+            "api_send_on_detection": False,  # 사람 검출 시 API 전송
         }
+
+    # API 테스트 상태
+    if "test_api_response" not in st.session_state:
+        st.session_state.test_api_response = None
 
     # 브라우저 상태
     if "browser_selected_date" not in st.session_state:
@@ -103,6 +115,10 @@ def init_session_state():
 
     if "browser_selected_frame" not in st.session_state:
         st.session_state.browser_selected_frame = None
+
+    # ROI 상태 추적 (부재 감지용)
+    if "prev_roi_states" not in st.session_state:
+        st.session_state.prev_roi_states = {}
 
 
 def initialize_engines():
@@ -205,6 +221,88 @@ def save_detection_result(result):
         detections=result.detections,
         face_results=result.face_results,
     )
+
+
+def send_api_alert(event_type: str, roi_id: str, frame: np.ndarray = None):
+    """
+    API 알림 전송
+
+    Args:
+        event_type: 이벤트 타입 (absence, detection 등)
+        roi_id: ROI ID
+        frame: 이미지 프레임 (선택)
+    """
+    config = st.session_state.config
+
+    # 이벤트 타입에 따른 전송 여부 확인
+    if event_type == "absence" and not config.get("api_send_on_absence", False):
+        return
+    if event_type == "detection" and not config.get("api_send_on_detection", False):
+        return
+
+    api_endpoints = config.get("api_endpoints", [])
+    enabled_endpoints = [ep for ep in api_endpoints if ep.get("enabled", True)]
+
+    if not enabled_endpoints:
+        return
+
+    watch_id = config.get("watch_id", "")
+    sender_id = config.get("sender_id", "streamlit-app")
+
+    for endpoint in enabled_endpoints:
+        try:
+            api_url = endpoint["url"]
+
+            # watchId 치환
+            if "{watchId}" in api_url:
+                api_url = api_url.replace("{watchId}", watch_id)
+
+            if endpoint.get("type") == "json":
+                # JSON 방식
+                event_data = {
+                    "eventId": str(uuid.uuid4()),
+                    "watchId": watch_id,
+                    "senderId": sender_id,
+                    "eventType": event_type,
+                    "roiId": roi_id,
+                    "createdAt": datetime.now().isoformat(),
+                }
+
+                response = requests.post(
+                    api_url,
+                    json=event_data,
+                    headers={"Content-Type": "application/json"},
+                    timeout=5,
+                )
+            else:
+                # Multipart 방식
+                form_data = {
+                    "senderId": sender_id,
+                    "note": f"{event_type} detected in {roi_id}",
+                }
+
+                files = None
+                if frame is not None:
+                    # 프레임을 JPEG로 인코딩
+                    _, buffer = cv2.imencode(".jpg", frame)
+                    files = {"image": ("detection.jpg", buffer.tobytes(), "image/jpeg")}
+
+                response = requests.post(
+                    api_url,
+                    data=form_data,
+                    files=files,
+                    timeout=5,
+                )
+
+            if response.status_code in [200, 201]:
+                print(f"[API] ✅ 전송 성공: {endpoint['name']} ({event_type})")
+            else:
+                print(
+                    f"[API] ⚠️ 전송 실패: {endpoint['name']} (Status: {response.status_code})"
+                )
+
+        except Exception as e:
+            print(f"[API] ❌ 전송 오류: {endpoint['name']} - {e}")
 
 
 # ============================================================
@@ -434,6 +532,98 @@ if st.session_state.result_storage:
 
     st.sidebar.progress(min(usage_percent / 100, 1.0))
 
+st.sidebar.divider()
+
+# ============================================================
+# API 설정
+# ============================================================
+
+st.sidebar.subheader("🌐 API 설정")
+
+config = st.session_state.config
+
+# Watch ID
+config["watch_id"] = st.sidebar.text_input(
+    "Watch ID",
+    config.get("watch_id", ""),
+    help="워치 ID - API 호출 시 사용",
+)
+
+# Sender ID
+config["sender_id"] = st.sidebar.text_input(
+    "Sender ID",
+    config.get("sender_id", "streamlit-app"),
+    help="발신자 ID",
+)
+
+# 사람 검출 시 API 전송
+config["api_send_on_detection"] = st.sidebar.checkbox(
+    "사람 검출 시 API 전송",
+    value=config.get("api_send_on_detection", False),
+    help="ROI 영역에서 사람이 나타나면 API 전송",
+)
+
+# 부재 감지 시 API 전송
+config["api_send_on_absence"] = st.sidebar.checkbox(
+    "부재 감지 시 API 전송",
+    value=config.get("api_send_on_absence", False),
+    help="ROI 영역에서 사람이 사라지면 API 전송",
+)
+
+# API 엔드포인트 관리
+with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
+    if "api_endpoints" not in config:
+        config["api_endpoints"] = []
+
+    st.markdown("**등록된 API**")
+
+    for i, endpoint in enumerate(config["api_endpoints"]):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.text(endpoint.get("name", f"API {i+1}"))
+            st.caption(endpoint.get("url", "")[:40] + "...")
+        with col2:
+            enabled = st.checkbox(
+                "활성",
+                endpoint.get("enabled", True),
+                key=f"api_enabled_{i}",
+                label_visibility="collapsed",
+            )
+            config["api_endpoints"][i]["enabled"] = enabled
+
+        if st.button("🗑️ 삭제", key=f"delete_api_{i}"):
+            config["api_endpoints"].pop(i)
+            st.rerun()
+
+        st.markdown("---")
+
+    # 새 API 추가
+    st.markdown("**새 API 추가**")
+    new_api_name = st.text_input("이름", "Emergency API", key="new_api_name")
+    new_api_url = st.text_input(
+        "URL",
+        "http://localhost:8000/api/emergency",
+        key="new_api_url",
+    )
+    new_api_type = st.selectbox(
+        "타입",
+        ["json", "multipart"],
+        key="new_api_type",
+    )
+
+    if st.button("➕ API 추가"):
+        config["api_endpoints"].append(
+            {
+                "name": new_api_name,
+                "url": new_api_url,
+                "enabled": True,
+                "method": "POST",
+                "type": new_api_type,
+            }
+        )
+        st.success(f"✅ {new_api_name} 추가됨!")
+        st.rerun()
+
 
 # ============================================================
 # 메인 영역 - 탭
@@ -447,7 +637,9 @@ if not st.session_state.engines_initialized:
     st.stop()
 
 # 탭 생성
-tab_realtime, tab_browser = st.tabs(["📹 실시간 검출", "📁 결과 브라우저"])
+tab_realtime, tab_browser, tab_api = st.tabs(
+    ["📹 실시간 검출", "📁 결과 브라우저", "🔗 API 테스트"]
+)
 
 
 # ============================================================
@@ -477,6 +669,34 @@ with tab_realtime:
                 if result is not None:
                     # 검출 결과 저장
                     save_detection_result(result)
+
+                    # ROI 상태 변화 감지 및 API 전송
+                    if result.roi_states:
+                        for roi_id, state in result.roi_states.items():
+                            prev_state = st.session_state.prev_roi_states.get(
+                                roi_id, {}
+                            )
+                            prev_detected = prev_state.get("person_detected", False)
+                            curr_detected = state.get("person_detected", False)
+
+                            # 사람이 없었다가 나타난 경우 (검출)
+                            if not prev_detected and curr_detected:
+                                send_api_alert(
+                                    event_type="detection",
+                                    roi_id=roi_id,
+                                    frame=result.annotated_frame,
+                                )
+
+                            # 사람이 있었다가 없어진 경우 (부재 감지)
+                            if prev_detected and not curr_detected:
+                                send_api_alert(
+                                    event_type="absence",
+                                    roi_id=roi_id,
+                                    frame=result.annotated_frame,
+                                )
+
+                        # 상태 업데이트
+                        st.session_state.prev_roi_states = result.roi_states.copy()
 
                     if result.annotated_frame is not None:
                         # BGR → RGB 변환
@@ -741,6 +961,236 @@ with tab_browser:
                         st.text(f"  #{i+1}: {expr} ({conf:.0%})")
             else:
                 st.info("이미지를 선택하세요")
+
+
+# ============================================================
+# 탭 3: API 테스트
+# ============================================================
+
+with tab_api:
+    st.subheader("🔗 API 엔드포인트 테스트")
+
+    col_api_form, col_api_result = st.columns([1, 1])
+
+    with col_api_form:
+        st.markdown("#### 📤 테스트 요청")
+
+        config = st.session_state.config
+        api_endpoints = config.get("api_endpoints", [])
+
+        if not api_endpoints:
+            st.warning(
+                "⚠️ 등록된 API 엔드포인트가 없습니다. 사이드바에서 API를 추가해주세요."
+            )
+        else:
+            # API 선택
+            api_options = [f"{ep['name']} ({ep['type']})" for ep in api_endpoints]
+            selected_api_idx = st.selectbox(
+                "테스트할 API",
+                range(len(api_options)),
+                format_func=lambda x: api_options[x],
+            )
+            selected_api = api_endpoints[selected_api_idx]
+
+            st.info(f"**URL**: {selected_api['url']}")
+            st.info(f"**Type**: {selected_api.get('type', 'json')}")
+
+            st.markdown("---")
+
+            # 테스트 데이터
+            test_watch_id = st.text_input(
+                "Watch ID",
+                config.get("watch_id", "test_watch_001"),
+                key="test_watch_id",
+            )
+            test_sender_id = st.text_input(
+                "Sender ID",
+                config.get("sender_id", "streamlit-app"),
+                key="test_sender_id",
+            )
+            test_note = st.text_area(
+                "Note (메시지)",
+                "테스트 알림 메시지입니다.",
+                key="test_note",
+            )
+
+            # 이미지 업로드 (Multipart일 때)
+            uploaded_file = None
+            if selected_api.get("type") == "multipart":
+                uploaded_file = st.file_uploader(
+                    "이미지 (선택)",
+                    type=["jpg", "jpeg", "png"],
+                    key="test_image",
+                )
+
+            # 테스트 실행
+            if st.button("🚀 API 테스트 실행", type="primary"):
+                try:
+                    with st.spinner("API 호출 중..."):
+                        api_url = selected_api["url"]
+
+                        # watchId 치환
+                        if "{watchId}" in api_url:
+                            api_url = api_url.replace("{watchId}", test_watch_id)
+
+                        if selected_api.get("type") == "json":
+                            # JSON 방식
+                            event_data = {
+                                "eventId": str(uuid.uuid4()),
+                                "watchId": test_watch_id,
+                                "senderId": test_sender_id,
+                                "note": test_note,
+                                "createdAt": datetime.now().isoformat(),
+                                "status": "TEST",
+                            }
+
+                            response = requests.post(
+                                api_url,
+                                json=event_data,
+                                headers={"Content-Type": "application/json"},
+                                timeout=10,
+                            )
+                            request_data = event_data
+
+                        else:
+                            # Multipart 방식
+                            form_data = {
+                                "senderId": test_sender_id,
+                                "note": test_note,
+                            }
+
+                            files = None
+                            if uploaded_file:
+                                files = {
+                                    "image": (
+                                        uploaded_file.name,
+                                        uploaded_file.getvalue(),
+                                        uploaded_file.type,
+                                    )
+                                }
+
+                            response = requests.post(
+                                api_url,
+                                data=form_data,
+                                files=files,
+                                timeout=10,
+                            )
+                            request_data = {
+                                "url": api_url,
+                                "senderId": test_sender_id,
+                                "note": test_note,
+                                "image": (
+                                    uploaded_file.name if uploaded_file else "(없음)"
+                                ),
+                            }
+
+                    # 결과 저장
+                    st.session_state.test_api_response = {
+                        "status_code": response.status_code,
+                        "response_text": response.text,
+                        "request_data": request_data,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+
+                    if response.status_code in [200, 201]:
+                        st.success(
+                            f"✅ API 호출 성공! (Status: {response.status_code})"
+                        )
+                    else:
+                        st.error(f"⚠️ API 호출 실패 (Status: {response.status_code})")
+
+                except requests.exceptions.Timeout:
+                    st.error("❌ 타임아웃: API 응답이 없습니다.")
+                    st.session_state.test_api_response = {
+                        "error": "Timeout",
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ 연결 오류: API 서버에 연결할 수 없습니다.")
+                    st.session_state.test_api_response = {
+                        "error": "Connection Error",
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                except Exception as e:
+                    st.error(f"❌ 오류 발생: {str(e)}")
+                    st.session_state.test_api_response = {
+                        "error": str(e),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+
+    with col_api_result:
+        st.markdown("#### 📋 테스트 결과")
+
+        if st.session_state.test_api_response:
+            result = st.session_state.test_api_response
+
+            st.markdown(f"**테스트 시간**: {result.get('timestamp', 'N/A')}")
+            st.markdown("---")
+
+            if "error" in result:
+                st.error(f"**오류**: {result['error']}")
+            else:
+                # 상태 코드
+                status_code = result.get("status_code", 0)
+                if status_code in [200, 201]:
+                    st.success(f"**Status Code**: {status_code}")
+                else:
+                    st.error(f"**Status Code**: {status_code}")
+
+                # 요청 데이터
+                st.markdown("**요청 데이터**")
+                st.json(result.get("request_data", {}))
+
+                # 응답
+                st.markdown("**응답**")
+                response_text = result.get("response_text", "")
+                try:
+                    import json
+
+                    response_json = json.loads(response_text)
+                    st.json(response_json)
+                except:
+                    st.code(
+                        response_text[:500]
+                        if len(response_text) > 500
+                        else response_text
+                    )
+
+            # 결과 초기화 버튼
+            if st.button("🗑️ 결과 초기화"):
+                st.session_state.test_api_response = None
+                st.rerun()
+        else:
+            st.info("API 테스트를 실행하면 결과가 여기에 표시됩니다.")
+
+    # API 형식 예시
+    st.markdown("---")
+    with st.expander("💡 API 형식 예시"):
+        st.markdown(
+            """
+        **JSON 방식** (`application/json`):
+        ```json
+        {
+            "eventId": "uuid",
+            "watchId": "watch_001",
+            "senderId": "streamlit-app",
+            "note": "알림 메시지",
+            "createdAt": "2024-12-14T15:30:00",
+            "status": "SENT"
+        }
+        ```
+
+        **Multipart 방식** (`multipart/form-data`):
+        ```
+        POST /api/emergency/quick/{watchId}
+        Content-Type: multipart/form-data
+
+        senderId: test-user
+        note: 응급상황 메시지
+        image: (파일)
+        ```
+        """
+        )
 
 
 # ============================================================
