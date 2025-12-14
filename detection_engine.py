@@ -98,22 +98,56 @@ class DetectionEngine:
 
         # YOLO 모델 로드 (GPU 실패 시 CPU로 폴백)
         print(f"[DetectionEngine] YOLO 모델 로딩: {yolo_model}")
+
+        import torch
+        import os
+        import numpy as np
+
+        # 환경 변수로 CPU 강제 사용 가능 (Jetson 등 호환성 문제 시)
+        force_cpu = os.environ.get("YOLO_FORCE_CPU", "").lower() in ("1", "true", "yes")
+
+        # Jetson 장치 감지
+        is_jetson = os.path.exists("/etc/nv_tegra_release")
+        if is_jetson:
+            print("[DetectionEngine] 🔍 Jetson 장치 감지됨")
+
         self.model = YOLO(yolo_model)
 
         # Device 설정: GPU 사용 가능하면 GPU, 아니면 CPU
-        import torch
-
-        if torch.cuda.is_available():
+        if force_cpu:
+            self.device = "cpu"
+            print(f"[DetectionEngine] ✅ CPU 강제 사용 (YOLO_FORCE_CPU=1)")
+        elif torch.cuda.is_available():
             try:
-                # GPU 테스트
+                # GPU 테스트 - 실제 추론까지 테스트
                 self.device = "cuda"
                 self.model.to(self.device)
-                # Warmup 테스트
-                test_img = torch.zeros((1, 3, 640, 640)).to(self.device)
+
+                # Warmup 테스트: 실제 추론으로 CUDA 커널 호환성 확인
+                print("[DetectionEngine] GPU warmup 테스트 중...")
+                test_img = np.zeros((640, 640, 3), dtype=np.uint8)
+                _ = self.model(test_img, verbose=False, device=self.device)
                 print(f"[DetectionEngine] ✅ YOLO 모델 GPU 로드 완료 (cuda)")
+
+            except RuntimeError as e:
+                error_msg = str(e).lower()
+                if "cuda" in error_msg or "kernel" in error_msg:
+                    print(f"[DetectionEngine] ⚠️ CUDA 커널 호환성 문제, CPU 사용: {e}")
+                    if is_jetson:
+                        print("[DetectionEngine] 💡 Jetson용 PyTorch 설치 권장:")
+                        print(
+                            "   https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048"
+                        )
+                else:
+                    print(f"[DetectionEngine] ⚠️ GPU 초기화 실패, CPU 사용: {e}")
+                self.device = "cpu"
+                # 모델을 CPU로 다시 로드
+                self.model = YOLO(yolo_model)
+                self.model.to(self.device)
             except Exception as e:
                 print(f"[DetectionEngine] ⚠️ GPU 초기화 실패, CPU 사용: {e}")
                 self.device = "cpu"
+                self.model = YOLO(yolo_model)
                 self.model.to(self.device)
         else:
             self.device = "cpu"
