@@ -96,10 +96,28 @@ class DetectionEngine:
         self.enable_face_analysis = enable_face_analysis and FACE_ANALYZER_AVAILABLE
         self.api_endpoint = api_endpoint
 
-        # YOLO 모델 로드
+        # YOLO 모델 로드 (GPU 실패 시 CPU로 폴백)
         print(f"[DetectionEngine] YOLO 모델 로딩: {yolo_model}")
         self.model = YOLO(yolo_model)
-        print("[DetectionEngine] ✅ YOLO 모델 로드 완료")
+
+        # Device 설정: GPU 사용 가능하면 GPU, 아니면 CPU
+        import torch
+
+        if torch.cuda.is_available():
+            try:
+                # GPU 테스트
+                self.device = "cuda"
+                self.model.to(self.device)
+                # Warmup 테스트
+                test_img = torch.zeros((1, 3, 640, 640)).to(self.device)
+                print(f"[DetectionEngine] ✅ YOLO 모델 GPU 로드 완료 (cuda)")
+            except Exception as e:
+                print(f"[DetectionEngine] ⚠️ GPU 초기화 실패, CPU 사용: {e}")
+                self.device = "cpu"
+                self.model.to(self.device)
+        else:
+            self.device = "cpu"
+            print(f"[DetectionEngine] ✅ YOLO 모델 CPU 로드 완료")
 
         # 얼굴 분석기 초기화
         self.face_analyzer = None
@@ -289,8 +307,8 @@ class DetectionEngine:
         if current_time - self.last_detection_time >= self.detection_interval:
             start_inference = time.time()
 
-            # YOLO 추론
-            results = self.model(frame, verbose=False)
+            # YOLO 추론 (device 명시)
+            results = self.model(frame, verbose=False, device=self.device)
 
             # 결과 파싱
             for result in results:
