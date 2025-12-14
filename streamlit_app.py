@@ -430,7 +430,7 @@ elif camera_type == "HTTP POST 수신":
     )
 
     # 수신 상태 표시 (검출 중일 때)
-    if st.session_state.is_detection_running:
+    if st.session_state.get("is_detection_running", False):
         try:
             from image_receiver import get_stats
 
