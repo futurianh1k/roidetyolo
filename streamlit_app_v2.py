@@ -94,12 +94,15 @@ def init_session_state():
             "storage_max_mb": 100,
             # API 설정
             "api_endpoints": [],
+            "api_base_url": os.getenv("EMERGENCY_API_URL", ""),  # 기본 API URL
             "watch_id": os.getenv("EMERGENCY_WATCH_ID", ""),
             "sender_id": os.getenv("EMERGENCY_SENDER_ID", "streamlit-app"),
             "image_base_url": os.getenv("IMAGE_BASE_URL", ""),
             "fcm_project_id": os.getenv("FCM_PROJECT_ID", "emergency-alert-system"),
             "api_send_on_absence": False,  # 부재 감지 시 API 전송
             "api_send_on_detection": False,  # 사람 검출 시 API 전송
+            # 부재 판단 설정
+            "absence_threshold": 10,  # 연속 미검출 횟수 기준
         }
 
     # API 테스트 상태
@@ -122,6 +125,14 @@ def init_session_state():
     # ROI 상태 추적 (부재 감지용)
     if "prev_roi_states" not in st.session_state:
         st.session_state.prev_roi_states = {}
+
+    # ROI별 연속 미검출 카운터 (부재 판단용)
+    if "absence_counters" not in st.session_state:
+        st.session_state.absence_counters = {}  # {roi_id: count}
+
+    # ROI별 부재 API 전송 여부 (중복 전송 방지)
+    if "absence_api_sent" not in st.session_state:
+        st.session_state.absence_api_sent = {}  # {roi_id: bool}
 
 
 def initialize_engines():
@@ -269,14 +280,38 @@ def send_api_alert(
                 "reason": "api_send_on_detection disabled",
             }
 
-    api_endpoints = config.get("api_endpoints", [])
-    enabled_endpoints = [ep for ep in api_endpoints if ep.get("enabled", True)]
-
-    if not enabled_endpoints:
-        return {"success": False, "results": [], "reason": "no enabled endpoints"}
-
     watch_id = config.get("watch_id", "")
     sender_id = config.get("sender_id", "streamlit-app")
+    api_base_url = config.get("api_base_url", "")
+
+    # API 엔드포인트 목록 구성
+    # 1. 기본 API: api_base_url + "/" + watch_id (있으면)
+    # 2. 추가 등록된 엔드포인트들
+    api_endpoints = []
+
+    # 기본 API URL (base_url + watch_id)
+    if api_base_url and watch_id:
+        primary_url = f"{api_base_url.rstrip('/')}/{watch_id}"
+        api_endpoints.append(
+            {
+                "name": "Primary API",
+                "url": primary_url,
+                "type": "json",
+                "enabled": True,
+            }
+        )
+
+    # 추가 등록된 엔드포인트
+    extra_endpoints = config.get("api_endpoints", [])
+    enabled_extras = [ep for ep in extra_endpoints if ep.get("enabled", True)]
+    api_endpoints.extend(enabled_extras)
+
+    if not api_endpoints:
+        return {
+            "success": False,
+            "results": [],
+            "reason": "no API configured (set api_base_url + watch_id)",
+        }
 
     # 이벤트 ID 생성
     event_id = str(uuid.uuid4())
@@ -293,7 +328,7 @@ def send_api_alert(
     fcm_project = config.get("fcm_project_id", "emergency-alert-system")
     fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
 
-    for endpoint in enabled_endpoints:
+    for endpoint in api_endpoints:
         result = {
             "endpoint": endpoint.get("name", "Unknown"),
             "url": endpoint.get("url", ""),
@@ -668,18 +703,61 @@ st.sidebar.subheader("🌐 API 설정")
 
 config = st.session_state.config
 
+# API Base URL
+config["api_base_url"] = st.sidebar.text_input(
+    "API Base URL",
+    config.get("api_base_url", ""),
+    help="API 기본 URL (예: http://server:8080/api/emergency)",
+)
+
 # Watch ID
 config["watch_id"] = st.sidebar.text_input(
     "Watch ID",
     config.get("watch_id", ""),
-    help="워치 ID - API 호출 시 사용",
+    help="워치 ID - API URL에 자동 추가됨",
 )
+
+# 최종 API URL 표시
+if config["api_base_url"] and config["watch_id"]:
+    final_api_url = f"{config['api_base_url'].rstrip('/')}/{config['watch_id']}"
+    st.sidebar.caption(f"📡 API URL: `{final_api_url}`")
 
 # Sender ID
 config["sender_id"] = st.sidebar.text_input(
     "Sender ID",
     config.get("sender_id", "streamlit-app"),
     help="발신자 ID",
+)
+
+# 부재 판단 기준 슬라이더
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🔍 부재 판단 설정**")
+
+config["absence_threshold"] = st.sidebar.slider(
+    "부재 판단 기준 (연속 미검출 횟수)",
+    min_value=1,
+    max_value=100,
+    value=config.get("absence_threshold", 10),
+    help="사람이 연속으로 N회 검출되지 않으면 부재로 판단",
+)
+st.sidebar.caption(
+    f"💡 사람이 {config['absence_threshold']}회 연속 미검출되면 부재 API 전송"
+)
+
+st.sidebar.markdown("---")
+
+# 사람 검출 시 API 전송
+config["api_send_on_detection"] = st.sidebar.checkbox(
+    "사람 검출 시 API 전송",
+    value=config.get("api_send_on_detection", False),
+    help="ROI 영역에서 사람이 나타나면 API 전송",
+)
+
+# 부재 감지 시 API 전송
+config["api_send_on_absence"] = st.sidebar.checkbox(
+    "부재 감지 시 API 전송",
+    value=config.get("api_send_on_absence", False),
+    help="ROI 영역에서 사람이 사라지면 API 전송",
 )
 
 # 고급 설정
@@ -695,20 +773,6 @@ with st.sidebar.expander("🔧 고급 API 설정", expanded=False):
         config.get("fcm_project_id", "emergency-alert-system"),
         help="Firebase Cloud Messaging 프로젝트 ID",
     )
-
-# 사람 검출 시 API 전송
-config["api_send_on_detection"] = st.sidebar.checkbox(
-    "사람 검출 시 API 전송",
-    value=config.get("api_send_on_detection", False),
-    help="ROI 영역에서 사람이 나타나면 API 전송",
-)
-
-# 부재 감지 시 API 전송
-config["api_send_on_absence"] = st.sidebar.checkbox(
-    "부재 감지 시 API 전송",
-    value=config.get("api_send_on_absence", False),
-    help="ROI 영역에서 사람이 사라지면 API 전송",
-)
 
 # API 엔드포인트 관리
 with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
@@ -840,6 +904,8 @@ with tab_realtime:
 
                     # ROI 상태 변화 감지 및 API 전송
                     if result.roi_states:
+                        absence_threshold = config.get("absence_threshold", 10)
+
                         for roi_id, state in result.roi_states.items():
                             prev_state = st.session_state.prev_roi_states.get(
                                 roi_id, {}
@@ -847,22 +913,44 @@ with tab_realtime:
                             prev_detected = prev_state.get("person_detected", False)
                             curr_detected = state.get("person_detected", False)
 
-                            # 사람이 없었다가 나타난 경우 (검출)
-                            if not prev_detected and curr_detected:
-                                # 저장된 이미지 파일로 API 전송
-                                send_api_alert(
-                                    event_type="detection",
-                                    roi_id=roi_id,
-                                    image_path=saved_image_path,
-                                )
+                            # 연속 미검출 카운터 관리
+                            if roi_id not in st.session_state.absence_counters:
+                                st.session_state.absence_counters[roi_id] = 0
+                            if roi_id not in st.session_state.absence_api_sent:
+                                st.session_state.absence_api_sent[roi_id] = False
 
-                            # 사람이 있었다가 없어진 경우 (부재 감지)
-                            if prev_detected and not curr_detected:
-                                send_api_alert(
-                                    event_type="absence",
-                                    roi_id=roi_id,
-                                    image_path=saved_image_path,
-                                )
+                            # 사람이 검출된 경우 → 카운터 리셋
+                            if curr_detected:
+                                st.session_state.absence_counters[roi_id] = 0
+                                st.session_state.absence_api_sent[roi_id] = False
+
+                                # 사람이 없었다가 나타난 경우 (검출)
+                                if not prev_detected:
+                                    send_api_alert(
+                                        event_type="detection",
+                                        roi_id=roi_id,
+                                        image_path=saved_image_path,
+                                    )
+                            else:
+                                # 사람이 검출되지 않은 경우 → 카운터 증가
+                                st.session_state.absence_counters[roi_id] += 1
+
+                                # 연속 미검출 횟수가 기준에 도달하면 부재 API 전송
+                                if (
+                                    st.session_state.absence_counters[roi_id]
+                                    >= absence_threshold
+                                    and not st.session_state.absence_api_sent[roi_id]
+                                ):
+                                    send_api_alert(
+                                        event_type="absence",
+                                        roi_id=roi_id,
+                                        image_path=saved_image_path,
+                                    )
+                                    st.session_state.absence_api_sent[roi_id] = True
+                                    print(
+                                        f"[Absence] ROI {roi_id}: "
+                                        f"{st.session_state.absence_counters[roi_id]}회 연속 미검출 → API 전송"
+                                    )
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
@@ -912,14 +1000,29 @@ with tab_realtime:
 
         # ROI 상태
         st.caption("ROI 상태")
+        absence_threshold = config.get("absence_threshold", 10)
+
         if st.session_state.detection_engine:
             roi_states = st.session_state.detection_engine.get_roi_states()
 
             for roi_id, state in roi_states.items():
+                absence_count = st.session_state.absence_counters.get(roi_id, 0)
+                api_sent = st.session_state.absence_api_sent.get(roi_id, False)
+
                 if state["person_detected"]:
                     st.success(f"✅ {roi_id}: 사람 감지")
                 else:
-                    st.error(f"❌ {roi_id}: 비어있음")
+                    # 미검출 상태 표시 (카운터 포함)
+                    if api_sent:
+                        st.error(
+                            f"🚨 {roi_id}: 부재 ({absence_count}/{absence_threshold})"
+                        )
+                    else:
+                        progress = absence_count / absence_threshold
+                        st.warning(
+                            f"⏳ {roi_id}: 미검출 ({absence_count}/{absence_threshold})"
+                        )
+                        st.progress(min(progress, 1.0))
 
         st.divider()
 
