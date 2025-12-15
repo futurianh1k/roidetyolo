@@ -266,7 +266,7 @@ class PolygonROISelector:
                     "presence_threshold_seconds": 5,
                     "absence_threshold_seconds": 3,
                     "count_interval_seconds": 1,
-                    "api_endpoint": "http://10.10.11.23:10008/api/emergency",
+                    "api_endpoint": "http://localhost:8080/api/emergency",
                     "watch_id": "watch_default",
                     "include_image_url": False
                 }

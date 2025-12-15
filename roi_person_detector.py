@@ -45,7 +45,7 @@ class ROIPersonDetector:
         self.roi_regions = self.config.get('roi_regions', [])
         
         # API 엔드포인트 설정
-        self.api_endpoint = self.config.get('api_endpoint', 'http://10.10.11.23:10008/api/emergency')
+        self.api_endpoint = self.config.get('api_endpoint', os.getenv('API_ENDPOINT', 'http://localhost:8080/api/emergency'))
         
         # 각 ROI별 상태 추적
         self.roi_states = {}

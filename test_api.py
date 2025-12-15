@@ -142,9 +142,9 @@ def main():
         try:
             with open('config.json', 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                api_url = config.get('api_endpoint', 'http://10.10.11.23:10008/api/emergency')
+                api_url = config.get('api_endpoint', 'http://localhost:8080/api/emergency')
         except FileNotFoundError:
-            api_url = 'http://10.10.11.23:10008/api/emergency'
+            api_url = 'http://localhost:8080/api/emergency'
             print("⚠️  config.json을 찾을 수 없습니다. 기본 URL을 사용합니다.")
     
     print("\n" + "=" * 60)

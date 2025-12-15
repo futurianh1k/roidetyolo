@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 import time
 import uuid
+import os
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -93,8 +94,10 @@ def init_session_state():
             "storage_max_mb": 100,
             # API 설정
             "api_endpoints": [],
-            "watch_id": "",
-            "sender_id": "streamlit-app",
+            "watch_id": os.getenv("EMERGENCY_WATCH_ID", ""),
+            "sender_id": os.getenv("EMERGENCY_SENDER_ID", "streamlit-app"),
+            "image_base_url": os.getenv("IMAGE_BASE_URL", ""),
+            "fcm_project_id": os.getenv("FCM_PROJECT_ID", "emergency-alert-system"),
             "api_send_on_absence": False,  # 부재 감지 시 API 전송
             "api_send_on_detection": False,  # 사람 검출 시 API 전송
         }
@@ -223,33 +226,75 @@ def save_detection_result(result):
     )
 
 
-def send_api_alert(event_type: str, roi_id: str, frame: np.ndarray = None):
+def send_api_alert(
+    event_type: str,
+    roi_id: str,
+    frame: np.ndarray = None,
+    force: bool = False,
+) -> dict:
     """
     API 알림 전송
 
     Args:
-        event_type: 이벤트 타입 (absence, detection 등)
+        event_type: 이벤트 타입 (absence, detection, manual_test 등)
         roi_id: ROI ID
         frame: 이미지 프레임 (선택)
+        force: True면 설정 무시하고 강제 전송
+
+    Returns:
+        dict: 전송 결과 {"success": bool, "results": list}
     """
     config = st.session_state.config
+    results = []
 
-    # 이벤트 타입에 따른 전송 여부 확인
-    if event_type == "absence" and not config.get("api_send_on_absence", False):
-        return
-    if event_type == "detection" and not config.get("api_send_on_detection", False):
-        return
+    # 이벤트 타입에 따른 전송 여부 확인 (force=True면 무시)
+    if not force:
+        if event_type == "absence" and not config.get("api_send_on_absence", False):
+            return {
+                "success": False,
+                "results": [],
+                "reason": "api_send_on_absence disabled",
+            }
+        if event_type == "detection" and not config.get("api_send_on_detection", False):
+            return {
+                "success": False,
+                "results": [],
+                "reason": "api_send_on_detection disabled",
+            }
 
     api_endpoints = config.get("api_endpoints", [])
     enabled_endpoints = [ep for ep in api_endpoints if ep.get("enabled", True)]
 
     if not enabled_endpoints:
-        return
+        return {"success": False, "results": [], "reason": "no enabled endpoints"}
 
     watch_id = config.get("watch_id", "")
     sender_id = config.get("sender_id", "streamlit-app")
 
+    # 이벤트 ID 생성
+    event_id = str(uuid.uuid4())
+    timestamp = datetime.now().isoformat()
+
+    # 이미지 URL 생성 (설정에 따라)
+    image_url = None
+    image_base_url = config.get("image_base_url", os.getenv("IMAGE_BASE_URL", ""))
+    if image_base_url:
+        image_filename = f"emergency_{event_id.split('-')[0]}.jpeg"
+        image_url = f"{image_base_url}/{image_filename}"
+
+    # FCM Message ID 생성
+    fcm_project = config.get("fcm_project_id", "emergency-alert-system")
+    fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
+
     for endpoint in enabled_endpoints:
+        result = {
+            "endpoint": endpoint.get("name", "Unknown"),
+            "url": endpoint.get("url", ""),
+            "success": False,
+            "status_code": None,
+            "error": None,
+        }
+
         try:
             api_url = endpoint["url"]
 
@@ -258,14 +303,17 @@ def send_api_alert(event_type: str, roi_id: str, frame: np.ndarray = None):
                 api_url = api_url.replace("{watchId}", watch_id)
 
             if endpoint.get("type") == "json":
-                # JSON 방식
+                # JSON 방식 - 완전한 이벤트 데이터
                 event_data = {
-                    "eventId": str(uuid.uuid4()),
+                    "eventId": event_id,
+                    "fcmMessageId": fcm_message_id,
+                    "imageUrl": image_url,
+                    "status": "SENT",
+                    "createdAt": timestamp,
                     "watchId": watch_id,
                     "senderId": sender_id,
                     "eventType": event_type,
                     "roiId": roi_id,
-                    "createdAt": datetime.now().isoformat(),
                 }
 
                 response = requests.post(
@@ -274,6 +322,8 @@ def send_api_alert(event_type: str, roi_id: str, frame: np.ndarray = None):
                     headers={"Content-Type": "application/json"},
                     timeout=5,
                 )
+                result["request_data"] = event_data
+
             else:
                 # Multipart 방식
                 form_data = {
@@ -293,16 +343,40 @@ def send_api_alert(event_type: str, roi_id: str, frame: np.ndarray = None):
                     files=files,
                     timeout=5,
                 )
+                result["request_data"] = form_data
+
+            result["status_code"] = response.status_code
+            result["response_text"] = response.text[:500] if response.text else ""
 
             if response.status_code in [200, 201]:
+                result["success"] = True
                 print(f"[API] ✅ 전송 성공: {endpoint['name']} ({event_type})")
             else:
+                result["error"] = f"HTTP {response.status_code}"
                 print(
                     f"[API] ⚠️ 전송 실패: {endpoint['name']} (Status: {response.status_code})"
                 )
 
+        except requests.exceptions.Timeout:
+            result["error"] = "Timeout"
+            print(f"[API] ⏱️ 타임아웃: {endpoint['name']}")
+        except requests.exceptions.ConnectionError:
+            result["error"] = "Connection Error"
+            print(f"[API] 🔌 연결 오류: {endpoint['name']}")
         except Exception as e:
+            result["error"] = str(e)
             print(f"[API] ❌ 전송 오류: {endpoint['name']} - {e}")
+
+        results.append(result)
+
+    # 전체 결과 반환
+    success_count = sum(1 for r in results if r["success"])
+    return {
+        "success": success_count > 0,
+        "results": results,
+        "total": len(results),
+        "success_count": success_count,
+    }
 
 
 # ============================================================
@@ -556,6 +630,20 @@ config["sender_id"] = st.sidebar.text_input(
     help="발신자 ID",
 )
 
+# 고급 설정
+with st.sidebar.expander("🔧 고급 API 설정", expanded=False):
+    config["image_base_url"] = st.text_input(
+        "Image Base URL",
+        config.get("image_base_url", ""),
+        help="이미지 URL 생성용 기본 URL (예: http://server:8080/api/images)",
+    )
+
+    config["fcm_project_id"] = st.text_input(
+        "FCM Project ID",
+        config.get("fcm_project_id", "emergency-alert-system"),
+        help="Firebase Cloud Messaging 프로젝트 ID",
+    )
+
 # 사람 검출 시 API 전송
 config["api_send_on_detection"] = st.sidebar.checkbox(
     "사람 검출 시 API 전송",
@@ -704,7 +792,7 @@ with tab_realtime:
                             result.annotated_frame, cv2.COLOR_BGR2RGB
                         )
                         video_placeholder.image(
-                            frame_rgb, channels="RGB", use_container_width=True
+                            frame_rgb, channels="RGB", width="stretch"
                         )
                 else:
                     # 시각화 프레임만 가져오기
@@ -714,7 +802,7 @@ with tab_realtime:
                     if frame is not None:
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         video_placeholder.image(
-                            frame_rgb, channels="RGB", use_container_width=True
+                            frame_rgb, channels="RGB", width="stretch"
                         )
                     else:
                         video_placeholder.info("⏳ 프레임 대기 중...")
@@ -757,6 +845,60 @@ with tab_realtime:
                 st.text(
                     f"{session_path.parent.parent.name}/{session_path.parent.name}/{session_path.name}"
                 )
+
+        st.divider()
+
+        # 테스트 API 전송 버튼
+        st.caption("🔗 API 테스트")
+
+        config = st.session_state.config
+        api_endpoints = config.get("api_endpoints", [])
+        enabled_count = sum(1 for ep in api_endpoints if ep.get("enabled", True))
+
+        if enabled_count == 0:
+            st.warning("활성화된 API 없음")
+        else:
+            st.text(f"활성 API: {enabled_count}개")
+
+            # 현재 프레임 가져오기
+            current_frame = None
+            if st.session_state.detection_engine:
+                current_frame = st.session_state.detection_engine.get_annotated_frame(
+                    timeout=0.01
+                )
+
+            col_btn1, col_btn2 = st.columns(2)
+
+            with col_btn1:
+                if st.button("🧪 테스트 전송", help="현재 프레임으로 테스트 API 전송"):
+                    # ROI가 있으면 첫 번째 ROI 사용
+                    roi_id = "test_roi"
+                    if st.session_state.detection_engine:
+                        roi_states = st.session_state.detection_engine.get_roi_states()
+                        if roi_states:
+                            roi_id = list(roi_states.keys())[0]
+
+                    result = send_api_alert(
+                        event_type="manual_test",
+                        roi_id=roi_id,
+                        frame=current_frame,
+                        force=True,
+                    )
+
+                    if result["success"]:
+                        st.success(
+                            f"✅ {result['success_count']}/{result['total']} 성공"
+                        )
+                    else:
+                        if result.get("reason"):
+                            st.error(f"❌ {result['reason']}")
+                        else:
+                            st.error(f"❌ 전송 실패")
+
+            with col_btn2:
+                if st.button("📋 결과 보기", help="마지막 API 전송 결과"):
+                    # API 테스트 탭으로 안내
+                    st.info("API 테스트 탭에서 상세 결과 확인")
 
 
 # ============================================================
@@ -983,7 +1125,7 @@ with tab_browser:
                                                 frame_info
                                             )
 
-                                        st.image(thumb_rgb, use_container_width=True)
+                                        st.image(thumb_rgb, width="stretch")
 
                                         # 시간 표시
                                         captured_at = frame_info.get("captured_at", "")
@@ -1007,7 +1149,7 @@ with tab_browser:
                 img = storage.load_frame_image(selected_frame["path"])
                 if img is not None:
                     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    st.image(img_rgb, use_container_width=True)
+                    st.image(img_rgb, width="stretch")
 
                 # 메타데이터
                 st.markdown("**캡처 시간**")
