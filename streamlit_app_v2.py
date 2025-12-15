@@ -30,7 +30,12 @@ from video_source_manager import (
     create_source_config,
 )
 from detection_engine import DetectionEngine
-from roi_utils import create_quadrant_rois, create_left_right_rois
+from roi_utils import (
+    create_quadrant_rois,
+    create_left_right_rois,
+    create_fullscreen_roi,
+    create_top_bottom_rois,
+)
 from camera_utils import detect_available_cameras, format_camera_list_for_ui
 from result_storage import ResultStorage, get_storage
 
@@ -244,11 +249,80 @@ def save_detection_result(result) -> str:
     return saved_path
 
 
+def generate_note_message(
+    event_type: str,
+    roi_id: str,
+    detections: list = None,
+    face_results: dict = None,
+) -> str:
+    """
+    검출 결과에 따른 Note 메시지 생성
+
+    Args:
+        event_type: 이벤트 타입 (absence, detection 등)
+        roi_id: ROI ID
+        detections: 검출된 객체 리스트
+        face_results: 얼굴 분석 결과 딕셔너리 {bbox_tuple: result}
+
+    Returns:
+        str: Note 메시지
+
+    메시지 규칙:
+        1. 사람 미검출: "사람이 검출되지 않습니다"
+        2. 사람 검출, 얼굴 미검출: "사람이 검출 되었습니다"
+        3. 사람 검출, 얼굴 검출, 표정 분류됨: "감정 상태: {표정}"
+    """
+    # 검출이 없는 경우 (absence 이벤트)
+    if event_type == "absence" or not detections or len(detections) == 0:
+        return "사람이 검출되지 않습니다"
+
+    # 사람이 검출된 경우
+    person_count = len(detections)
+
+    # 얼굴 분석 결과가 없는 경우
+    if not face_results or len(face_results) == 0:
+        if person_count == 1:
+            return "사람이 검출 되었습니다"
+        else:
+            return f"사람 {person_count}명이 검출 되었습니다"
+
+    # 얼굴 분석 결과가 있는 경우 - 표정 추출
+    expressions = []
+    for bbox_tuple, result in face_results.items():
+        expr_info = result.get("expression", {})
+        if isinstance(expr_info, dict):
+            expression = expr_info.get("expression", "")
+            confidence = expr_info.get("confidence", 0)
+            if expression and confidence > 0.3:  # 신뢰도 30% 이상
+                # 영어 표정을 한글로 변환
+                expression_kr = {
+                    "happy": "행복",
+                    "sad": "슬픔",
+                    "angry": "분노",
+                    "surprise": "놀람",
+                    "fear": "두려움",
+                    "disgust": "혐오",
+                    "neutral": "무표정",
+                }.get(expression.lower(), expression)
+                expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
+
+    if expressions:
+        if len(expressions) == 1:
+            return f"감정 상태: {expressions[0]}"
+        else:
+            return f"감정 상태: {', '.join(expressions)}"
+    else:
+        # 얼굴은 검출되었지만 표정 분류가 안된 경우
+        return "사람이 검출 되었습니다 (표정 분석 불가)"
+
+
 def send_api_alert(
     event_type: str,
     roi_id: str,
     image_path: str = None,
     force: bool = False,
+    detections: list = None,
+    face_results: dict = None,
 ) -> dict:
     """
     API 알림 전송
@@ -258,6 +332,8 @@ def send_api_alert(
         roi_id: ROI ID
         image_path: 저장된 이미지 파일 경로 (선택)
         force: True면 설정 무시하고 강제 전송
+        detections: 검출된 객체 리스트 (Note 메시지 생성용)
+        face_results: 얼굴 분석 결과 (Note 메시지 생성용)
 
     Returns:
         dict: 전송 결과 {"success": bool, "results": list}
@@ -290,13 +366,14 @@ def send_api_alert(
     api_endpoints = []
 
     # 기본 API URL (base_url + watch_id)
+    # 이미지 첨부를 위해 기본 타입을 multipart로 설정
     if api_base_url and watch_id:
         primary_url = f"{api_base_url.rstrip('/')}/{watch_id}"
         api_endpoints.append(
             {
                 "name": "Primary API",
                 "url": primary_url,
-                "type": "json",
+                "type": "multipart",  # 이미지 첨부 지원을 위해 multipart 사용
                 "enabled": True,
             }
         )
@@ -344,6 +421,14 @@ def send_api_alert(
             if "{watchId}" in api_url:
                 api_url = api_url.replace("{watchId}", watch_id)
 
+            # Note 메시지 생성 (검출 결과 기반)
+            note_message = generate_note_message(
+                event_type=event_type,
+                roi_id=roi_id,
+                detections=detections,
+                face_results=face_results,
+            )
+
             if endpoint.get("type") == "json":
                 # JSON 방식 - 완전한 이벤트 데이터
                 event_data = {
@@ -356,6 +441,7 @@ def send_api_alert(
                     "senderId": sender_id,
                     "eventType": event_type,
                     "roiId": roi_id,
+                    "note": note_message,  # 동적 메시지 추가
                 }
 
                 response = requests.post(
@@ -367,10 +453,15 @@ def send_api_alert(
                 result["request_data"] = event_data
 
             else:
-                # Multipart 방식
+                # Multipart 방식 - 이미지 첨부 지원
                 form_data = {
+                    "eventId": event_id,
                     "senderId": sender_id,
-                    "note": f"{event_type} detected in {roi_id}",
+                    "watchId": watch_id,
+                    "eventType": event_type,
+                    "roiId": roi_id or "",
+                    "note": note_message,  # 동적 메시지 사용
+                    "createdAt": timestamp,
                 }
 
                 files = None
@@ -381,8 +472,16 @@ def send_api_alert(
                             image_data = f.read()
                         filename = os.path.basename(image_path)
                         files = {"image": (filename, image_data, "image/jpeg")}
+                        print(
+                            f"[API] 📷 이미지 첨부: {filename} ({len(image_data)} bytes)"
+                        )
                     except Exception as read_err:
                         print(f"[API] ⚠️ 이미지 파일 읽기 실패: {read_err}")
+                else:
+                    if image_path:
+                        print(f"[API] ⚠️ 이미지 파일 없음: {image_path}")
+                    else:
+                        print(f"[API] ⚠️ 이미지 경로 없음")
 
                 response = requests.post(
                     api_url,
@@ -391,6 +490,7 @@ def send_api_alert(
                     timeout=5,
                 )
                 result["request_data"] = form_data
+                result["image_attached"] = files is not None
 
             result["status_code"] = response.status_code
             result["response_text"] = response.text[:500] if response.text else ""
@@ -578,23 +678,42 @@ st.sidebar.divider()
 
 st.sidebar.subheader("🎯 ROI 설정")
 
-col1, col2 = st.sidebar.columns(2)
+# ROI 프리셋 버튼들 (2행 3열)
+roi_col1, roi_col2, roi_col3 = st.sidebar.columns(3)
 
-with col1:
-    if st.button("⬅️➡️ 좌/우"):
+with roi_col1:
+    if st.button("📺 전체", help="전체 화면"):
+        rois = create_fullscreen_roi(normalized=True)
+        update_roi_regions(rois)
+        st.success("전체 ROI")
+
+with roi_col2:
+    if st.button("⬅️➡️ 좌우", help="좌/우 2분할"):
         rois = create_left_right_rois(normalized=True)
         update_roi_regions(rois)
-        st.success("좌/우 ROI 생성됨")
+        st.success("좌/우 ROI")
 
-with col2:
-    if st.button("🔲 4사분면"):
+with roi_col3:
+    if st.button("⬆️⬇️ 상하", help="상/하 2분할"):
+        rois = create_top_bottom_rois(normalized=True)
+        update_roi_regions(rois)
+        st.success("상/하 ROI")
+
+roi_col4, roi_col5, roi_col6 = st.sidebar.columns(3)
+
+with roi_col4:
+    if st.button("🔲 4분면", help="4사분면"):
         rois = create_quadrant_rois(normalized=True)
         update_roi_regions(rois)
-        st.success("4사분면 ROI 생성됨")
+        st.success("4사분면 ROI")
 
-if st.sidebar.button("🗑️ ROI 초기화"):
-    update_roi_regions([])
-    st.sidebar.success("ROI 초기화됨")
+with roi_col5:
+    pass  # 빈 공간
+
+with roi_col6:
+    if st.button("🗑️ 초기화", help="ROI 초기화"):
+        update_roi_regions([])
+        st.success("초기화됨")
 
 # ROI 목록 표시
 if st.session_state.roi_regions:
@@ -930,6 +1049,8 @@ with tab_realtime:
                                         event_type="detection",
                                         roi_id=roi_id,
                                         image_path=saved_image_path,
+                                        detections=result.detections,
+                                        face_results=result.face_results,
                                     )
                             else:
                                 # 사람이 검출되지 않은 경우 → 카운터 증가
@@ -945,6 +1066,8 @@ with tab_realtime:
                                         event_type="absence",
                                         roi_id=roi_id,
                                         image_path=saved_image_path,
+                                        detections=None,  # 부재 시 검출 없음
+                                        face_results=None,
                                     )
                                     st.session_state.absence_api_sent[roi_id] = True
                                     print(
@@ -1406,19 +1529,48 @@ with tab_api:
         config = st.session_state.config
         api_endpoints = config.get("api_endpoints", [])
 
-        if not api_endpoints:
+        # API 목록 구성 (Primary API 포함)
+        available_apis = []
+
+        # 1. Primary API (base_url + watch_id)
+        api_base_url = config.get("api_base_url", "")
+        watch_id = config.get("watch_id", "")
+        if api_base_url:
+            primary_url = (
+                f"{api_base_url.rstrip('/')}/{watch_id}" if watch_id else api_base_url
+            )
+            available_apis.append(
+                {
+                    "name": "✅ Primary API (Base URL + Watch ID)",
+                    "url": primary_url,
+                    "type": "json",
+                    "enabled": True,
+                    "is_primary": True,
+                }
+            )
+
+        # 2. 활성화된 추가 API들
+        enabled_endpoints = [ep for ep in api_endpoints if ep.get("enabled", True)]
+        available_apis.extend(enabled_endpoints)
+
+        if not available_apis:
             st.warning(
-                "⚠️ 등록된 API 엔드포인트가 없습니다. 사이드바에서 API를 추가해주세요."
+                "⚠️ 사용 가능한 API가 없습니다.\n\n"
+                "• **Primary API**: 사이드바에서 'API Base URL'과 'Watch ID'를 설정하세요\n"
+                "• **추가 API**: 사이드바 'API 엔드포인트 관리'에서 API를 추가하세요"
             )
         else:
             # API 선택
-            api_options = [f"{ep['name']} ({ep['type']})" for ep in api_endpoints]
+            api_options = [
+                f"{ep.get('name', 'Unknown')} ({ep.get('type', 'json')})"
+                for ep in available_apis
+            ]
             selected_api_idx = st.selectbox(
                 "테스트할 API",
                 range(len(api_options)),
                 format_func=lambda x: api_options[x],
             )
-            selected_api = api_endpoints[selected_api_idx]
+            selected_api = available_apis[selected_api_idx]
 
             st.info(f"**URL**: {selected_api['url']}")
             st.info(f"**Type**: {selected_api.get('type', 'json')}")
@@ -1442,14 +1594,57 @@ with tab_api:
                 key="test_note",
             )
 
-            # 이미지 업로드 (Multipart일 때)
-            uploaded_file = None
-            if selected_api.get("type") == "multipart":
+            # 이미지 첨부 옵션
+            st.markdown("**📷 이미지 첨부**")
+
+            image_source = st.radio(
+                "이미지 소스",
+                ["없음", "최근 검출 이미지", "직접 업로드"],
+                horizontal=True,
+                key="test_image_source",
+            )
+
+            test_image_data = None
+            test_image_name = None
+
+            if image_source == "최근 검출 이미지":
+                # 저장소에서 최근 이미지 가져오기
+                if st.session_state.result_storage:
+                    latest_path = (
+                        st.session_state.result_storage.get_latest_image_path()
+                    )
+                    if latest_path and os.path.exists(latest_path):
+                        st.success(f"✅ 최근 이미지: {os.path.basename(latest_path)}")
+                        # 이미지 미리보기
+                        try:
+                            preview_img = cv2.imread(latest_path)
+                            if preview_img is not None:
+                                preview_rgb = cv2.cvtColor(
+                                    preview_img, cv2.COLOR_BGR2RGB
+                                )
+                                st.image(
+                                    preview_rgb, width=200, caption="첨부할 이미지"
+                                )
+                                with open(latest_path, "rb") as f:
+                                    test_image_data = f.read()
+                                test_image_name = os.path.basename(latest_path)
+                        except Exception as e:
+                            st.warning(f"이미지 로드 실패: {e}")
+                    else:
+                        st.warning("⚠️ 저장된 검출 이미지가 없습니다")
+                else:
+                    st.warning("⚠️ 저장소가 초기화되지 않았습니다")
+
+            elif image_source == "직접 업로드":
                 uploaded_file = st.file_uploader(
-                    "이미지 (선택)",
+                    "이미지 파일",
                     type=["jpg", "jpeg", "png"],
-                    key="test_image",
+                    key="test_image_upload",
                 )
+                if uploaded_file:
+                    test_image_data = uploaded_file.getvalue()
+                    test_image_name = uploaded_file.name
+                    st.image(test_image_data, width=200, caption="업로드된 이미지")
 
             # 테스트 실행
             if st.button("🚀 API 테스트 실행", type="primary"):
@@ -1462,7 +1657,7 @@ with tab_api:
                             api_url = api_url.replace("{watchId}", test_watch_id)
 
                         if selected_api.get("type") == "json":
-                            # JSON 방식
+                            # JSON 방식 (이미지 없이 전송)
                             event_data = {
                                 "eventId": str(uuid.uuid4()),
                                 "watchId": test_watch_id,
@@ -1470,6 +1665,8 @@ with tab_api:
                                 "note": test_note,
                                 "createdAt": datetime.now().isoformat(),
                                 "status": "TEST",
+                                "eventType": "test",
+                                "hasImage": test_image_data is not None,
                             }
 
                             response = requests.post(
@@ -1481,19 +1678,21 @@ with tab_api:
                             request_data = event_data
 
                         else:
-                            # Multipart 방식
+                            # Multipart 방식 (이미지 포함 전송)
                             form_data = {
                                 "senderId": test_sender_id,
                                 "note": test_note,
+                                "watchId": test_watch_id,
+                                "eventType": "test",
                             }
 
                             files = None
-                            if uploaded_file:
+                            if test_image_data:
                                 files = {
                                     "image": (
-                                        uploaded_file.name,
-                                        uploaded_file.getvalue(),
-                                        uploaded_file.type,
+                                        test_image_name or "test_image.jpg",
+                                        test_image_data,
+                                        "image/jpeg",
                                     )
                                 }
 
@@ -1507,9 +1706,8 @@ with tab_api:
                                 "url": api_url,
                                 "senderId": test_sender_id,
                                 "note": test_note,
-                                "image": (
-                                    uploaded_file.name if uploaded_file else "(없음)"
-                                ),
+                                "watchId": test_watch_id,
+                                "image": test_image_name or "(없음)",
                             }
 
                     # 결과 저장

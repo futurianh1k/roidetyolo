@@ -8,6 +8,82 @@ ROI 유틸리티 함수
 import numpy as np
 
 
+def create_fullscreen_roi(normalized=True):
+    """
+    전체 화면을 하나의 ROI로 생성
+
+    Args:
+        normalized: True면 0.0~1.0 비율 좌표 사용
+
+    Returns:
+        list: 1개의 ROI 정보 리스트
+    """
+    if normalized:
+        m = 0.02  # 2% 여백
+        rois = [
+            {
+                "id": "ROI_FULL",
+                "type": "polygon",
+                "normalized": True,
+                "points_normalized": [
+                    [m, m],
+                    [1.0 - m, m],
+                    [1.0 - m, 1.0 - m],
+                    [m, 1.0 - m],
+                ],
+                "description": "전체 화면",
+            }
+        ]
+    else:
+        raise ValueError("전체 화면 ROI는 normalized=True만 지원합니다")
+
+    return rois
+
+
+def create_top_bottom_rois(normalized=True):
+    """
+    화면을 상/하 2등분하여 ROI 생성
+
+    Args:
+        normalized: True면 0.0~1.0 비율 좌표 사용
+
+    Returns:
+        list: 2개의 ROI 정보 리스트
+    """
+    if normalized:
+        m = 0.02  # 2% 여백
+        rois = [
+            {
+                "id": "ROI_TOP",
+                "type": "polygon",
+                "normalized": True,
+                "points_normalized": [
+                    [m, m],
+                    [1.0 - m, m],
+                    [1.0 - m, 0.5 - m],
+                    [m, 0.5 - m],
+                ],
+                "description": "상단 영역",
+            },
+            {
+                "id": "ROI_BOTTOM",
+                "type": "polygon",
+                "normalized": True,
+                "points_normalized": [
+                    [m, 0.5 + m],
+                    [1.0 - m, 0.5 + m],
+                    [1.0 - m, 1.0 - m],
+                    [m, 1.0 - m],
+                ],
+                "description": "하단 영역",
+            },
+        ]
+    else:
+        raise ValueError("상/하 ROI는 normalized=True만 지원합니다")
+
+    return rois
+
+
 def create_left_right_rois(
     frame_width=None, frame_height=None, margin=20, normalized=True
 ):

@@ -91,6 +91,9 @@ class ResultStorage:
         # 프레임 카운터
         self.frame_counter = 0
 
+        # 마지막 저장된 이미지 경로
+        self.last_saved_path: Optional[str] = None
+
         # 스레드 안전
         self._lock = Lock()
 
@@ -272,8 +275,39 @@ class ResultStorage:
                 self._metadata.last_updated = now.isoformat()
                 self._save_metadata()
 
+            # 마지막 저장 경로 업데이트
+            self.last_saved_path = str(filepath)
+
             print(f"[ResultStorage] 💾 저장: {filename} (검출: {len(detections)}명)")
             return str(filepath)
+
+    def get_latest_image_path(self) -> Optional[str]:
+        """
+        가장 최근에 저장된 이미지 경로 반환
+
+        Returns:
+            마지막 저장된 이미지 경로 또는 None
+        """
+        # 현재 세션의 마지막 저장 경로
+        if self.last_saved_path and os.path.exists(self.last_saved_path):
+            return self.last_saved_path
+
+        # 세션 경로가 있으면 그 안에서 가장 최근 이미지 찾기
+        if self.session_path and self.session_path.exists():
+            images = list(self.session_path.glob("frame_*.jpg"))
+            if images:
+                # 파일 수정 시간 기준 최신 파일
+                latest = max(images, key=lambda p: p.stat().st_mtime)
+                return str(latest)
+
+        # 전체 저장소에서 가장 최근 이미지 찾기
+        if self.base_path.exists():
+            all_images = list(self.base_path.rglob("frame_*.jpg"))
+            if all_images:
+                latest = max(all_images, key=lambda p: p.stat().st_mtime)
+                return str(latest)
+
+        return None
 
     def _save_metadata(self):
         """메타데이터 저장"""
