@@ -535,17 +535,56 @@ class ResultStorage:
         except Exception:
             return None
 
-    def delete_session(self, session_path: str) -> bool:
-        """세션 삭제"""
+    def delete_session(self, session_path: str) -> Tuple[bool, str]:
+        """
+        세션 삭제
+
+        Args:
+            session_path: 삭제할 세션 경로
+
+        Returns:
+            (성공 여부, 메시지)
+        """
+        path = Path(session_path)
+
         try:
-            if Path(session_path).exists():
-                shutil.rmtree(session_path)
-                self._cleanup_empty_folders()
-                print(f"[ResultStorage] 🗑️ 세션 삭제됨: {session_path}")
-                return True
+            if not path.exists():
+                return False, f"경로가 존재하지 않음: {session_path}"
+
+            # 삭제 전 파일 수 확인
+            file_count = sum(1 for _ in path.rglob("*") if _.is_file())
+
+            # shutil.rmtree로 폴더 전체 삭제
+            shutil.rmtree(session_path, ignore_errors=False)
+
+            # 삭제 확인
+            if path.exists():
+                # 아직 존재하면 강제 삭제 시도
+                import time
+
+                time.sleep(0.1)  # 파일 핸들 해제 대기
+                shutil.rmtree(session_path, ignore_errors=True)
+
+                if path.exists():
+                    return False, "삭제 후에도 폴더가 남아있음"
+
+            # 빈 폴더 정리
+            self._cleanup_empty_folders()
+
+            print(
+                f"[ResultStorage] 🗑️ 세션 삭제됨: {session_path} ({file_count}개 파일)"
+            )
+            return True, f"{file_count}개 파일 삭제됨"
+
+        except PermissionError as e:
+            print(f"[ResultStorage] ❌ 권한 오류: {e}")
+            return False, f"권한 오류 - 파일이 사용 중일 수 있음"
+        except OSError as e:
+            print(f"[ResultStorage] ❌ OS 오류: {e}")
+            return False, f"OS 오류: {str(e)}"
         except Exception as e:
             print(f"[ResultStorage] ❌ 세션 삭제 실패: {e}")
-        return False
+            return False, str(e)
 
     def get_storage_info(self) -> Dict[str, Any]:
         """저장소 정보"""

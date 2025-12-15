@@ -204,32 +204,39 @@ def update_roi_regions(roi_regions):
         st.session_state.detection_engine.set_roi_regions(roi_regions)
 
 
-def save_detection_result(result):
-    """검출 결과 저장"""
+def save_detection_result(result) -> str:
+    """
+    검출 결과 저장
+
+    Returns:
+        저장된 파일 경로 또는 None
+    """
     if not st.session_state.save_detections:
-        return
+        return None
 
     if st.session_state.result_storage is None:
-        return
+        return None
 
     if result is None or result.annotated_frame is None:
-        return
+        return None
 
     # 검출이 있을 때만 저장 (선택적)
     # if len(result.detections) == 0:
-    #     return
+    #     return None
 
-    st.session_state.result_storage.save_detection(
+    saved_path = st.session_state.result_storage.save_detection(
         annotated_frame=result.annotated_frame,
         detections=result.detections,
         face_results=result.face_results,
     )
 
+    return saved_path
+
 
 def send_api_alert(
     event_type: str,
     roi_id: str,
-    frame: np.ndarray = None,
+    image_path: str = None,
     force: bool = False,
 ) -> dict:
     """
@@ -238,7 +245,7 @@ def send_api_alert(
     Args:
         event_type: 이벤트 타입 (absence, detection, manual_test 등)
         roi_id: ROI ID
-        frame: 이미지 프레임 (선택)
+        image_path: 저장된 이미지 파일 경로 (선택)
         force: True면 설정 무시하고 강제 전송
 
     Returns:
@@ -332,10 +339,15 @@ def send_api_alert(
                 }
 
                 files = None
-                if frame is not None:
-                    # 프레임을 JPEG로 인코딩
-                    _, buffer = cv2.imencode(".jpg", frame)
-                    files = {"image": ("detection.jpg", buffer.tobytes(), "image/jpeg")}
+                if image_path and os.path.exists(image_path):
+                    # 저장된 파일을 읽어서 전송 (안전하고 일관성 있음)
+                    try:
+                        with open(image_path, "rb") as f:
+                            image_data = f.read()
+                        filename = os.path.basename(image_path)
+                        files = {"image": (filename, image_data, "image/jpeg")}
+                    except Exception as read_err:
+                        print(f"[API] ⚠️ 이미지 파일 읽기 실패: {read_err}")
 
                 response = requests.post(
                     api_url,
@@ -479,20 +491,38 @@ elif source_type == "비디오 파일":
     )
     source_config = ("file", file_path)
 
-# 소스 적용 버튼
-if st.sidebar.button("▶️ 소스 적용", disabled=not st.session_state.engines_initialized):
-    if source_config:
-        if len(source_config) == 3:
-            success = change_source(
-                source_config[0], source_config[1], **source_config[2]
-            )
-        else:
-            success = change_source(source_config[0], source_config[1])
+# 소스 적용/중단 버튼
+col_apply, col_stop = st.sidebar.columns(2)
 
-        if success:
-            st.sidebar.success("✅ 소스 변경됨")
-        else:
-            st.sidebar.error("❌ 소스 변경 실패")
+with col_apply:
+    if st.button(
+        "▶️ 적용",
+        disabled=not st.session_state.engines_initialized or source_config is None,
+        key="apply_source_btn",
+    ):
+        if source_config:
+            if len(source_config) == 3:
+                success = change_source(
+                    source_config[0], source_config[1], **source_config[2]
+                )
+            else:
+                success = change_source(source_config[0], source_config[1])
+
+            if success:
+                st.success("✅")
+            else:
+                st.error("❌")
+
+with col_stop:
+    # 소스가 연결되어 있을 때만 중단 버튼 활성화
+    is_connected = (
+        st.session_state.source_manager
+        and st.session_state.source_manager.get_stats()["source_connected"]
+    )
+    if st.button("⏹️ 중단", disabled=not is_connected, key="stop_source_btn"):
+        change_source("none", None)
+        st.success("⏹️")
+        st.rerun()
 
 # 현재 소스 상태
 if st.session_state.source_manager:
@@ -500,8 +530,10 @@ if st.session_state.source_manager:
     if stats["source_connected"]:
         st.sidebar.success(f"📡 연결됨: {stats['source_type']}")
         st.sidebar.caption(f"해상도: {stats['frame_width']}x{stats['frame_height']}")
+    elif st.session_state.current_source_type != "none":
+        st.sidebar.warning("📡 연결 시도 중...")
     else:
-        st.sidebar.warning("📡 연결 안됨")
+        st.sidebar.info("📡 대기 중")
 
 st.sidebar.divider()
 
@@ -553,15 +585,35 @@ confidence = st.sidebar.slider(
 )
 st.session_state.config["confidence_threshold"] = confidence
 
-# 검출 간격
-interval = st.sidebar.slider(
-    "검출 간격 (초)",
-    min_value=0.1,
-    max_value=5.0,
-    value=st.session_state.config["detection_interval"],
-    step=0.1,
+# 검출 간격 (10초~60초 선택 가능)
+interval_options = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0]
+interval_labels = {
+    0.5: "0.5초",
+    1.0: "1초",
+    2.0: "2초",
+    5.0: "5초",
+    10.0: "10초",
+    15.0: "15초",
+    20.0: "20초",
+    30.0: "30초",
+    45.0: "45초",
+    60.0: "1분",
+}
+
+# 현재 값에 가장 가까운 옵션 찾기
+current_interval = st.session_state.config["detection_interval"]
+closest_idx = min(
+    range(len(interval_options)),
+    key=lambda i: abs(interval_options[i] - current_interval),
 )
-st.session_state.config["detection_interval"] = interval
+
+interval_idx = st.sidebar.select_slider(
+    "검출 간격",
+    options=range(len(interval_options)),
+    value=closest_idx,
+    format_func=lambda i: interval_labels[interval_options[i]],
+)
+st.session_state.config["detection_interval"] = interval_options[interval_idx]
 
 # 얼굴 분석
 face_analysis = st.sidebar.checkbox(
@@ -663,30 +715,57 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
     if "api_endpoints" not in config:
         config["api_endpoints"] = []
 
-    st.markdown("**등록된 API**")
+    api_endpoints = config["api_endpoints"]
 
-    for i, endpoint in enumerate(config["api_endpoints"]):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.text(endpoint.get("name", f"API {i+1}"))
-            st.caption(endpoint.get("url", "")[:40] + "...")
-        with col2:
-            enabled = st.checkbox(
-                "활성",
-                endpoint.get("enabled", True),
-                key=f"api_enabled_{i}",
-                label_visibility="collapsed",
-            )
-            config["api_endpoints"][i]["enabled"] = enabled
+    if api_endpoints:
+        st.markdown("**📋 등록된 API**")
 
-        if st.button("🗑️ 삭제", key=f"delete_api_{i}"):
-            config["api_endpoints"].pop(i)
-            st.rerun()
+        # 전체 활성/비활성 버튼
+        col_all_on, col_all_off = st.columns(2)
+        with col_all_on:
+            if st.button("✅ 전체 활성", key="api_all_on"):
+                for ep in api_endpoints:
+                    ep["enabled"] = True
+                st.rerun()
+        with col_all_off:
+            if st.button("⬜ 전체 비활성", key="api_all_off"):
+                for ep in api_endpoints:
+                    ep["enabled"] = False
+                st.rerun()
 
         st.markdown("---")
 
+        # API 목록 (체크박스로 선택)
+        for i, endpoint in enumerate(api_endpoints):
+            enabled = st.checkbox(
+                f"**{endpoint.get('name', f'API {i+1}')}**",
+                value=endpoint.get("enabled", True),
+                key=f"api_enabled_{i}",
+                help=endpoint.get("url", ""),
+            )
+            config["api_endpoints"][i]["enabled"] = enabled
+
+            col_info, col_del = st.columns([4, 1])
+            with col_info:
+                st.caption(
+                    f"🔗 {endpoint.get('url', '')[:35]}... ({endpoint.get('type', 'json')})"
+                )
+            with col_del:
+                if st.button("🗑️", key=f"delete_api_{i}", help="삭제"):
+                    config["api_endpoints"].pop(i)
+                    st.rerun()
+
+        # 활성화된 API 수 표시
+        enabled_count = sum(1 for ep in api_endpoints if ep.get("enabled", True))
+        st.info(f"✅ {enabled_count}/{len(api_endpoints)}개 API 활성화됨")
+
+    else:
+        st.info("등록된 API가 없습니다")
+
+    st.markdown("---")
+
     # 새 API 추가
-    st.markdown("**새 API 추가**")
+    st.markdown("**➕ 새 API 추가**")
     new_api_name = st.text_input("이름", "Emergency API", key="new_api_name")
     new_api_url = st.text_input(
         "URL",
@@ -697,9 +776,10 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
         "타입",
         ["json", "multipart"],
         key="new_api_type",
+        help="json: JSON 데이터 전송, multipart: 이미지 포함 전송",
     )
 
-    if st.button("➕ API 추가"):
+    if st.button("➕ API 추가", key="add_api_btn"):
         config["api_endpoints"].append(
             {
                 "name": new_api_name,
@@ -755,8 +835,8 @@ with tab_realtime:
                 result = st.session_state.detection_engine.get_result(timeout=0.1)
 
                 if result is not None:
-                    # 검출 결과 저장
-                    save_detection_result(result)
+                    # 검출 결과 저장 및 경로 받기
+                    saved_image_path = save_detection_result(result)
 
                     # ROI 상태 변화 감지 및 API 전송
                     if result.roi_states:
@@ -769,10 +849,11 @@ with tab_realtime:
 
                             # 사람이 없었다가 나타난 경우 (검출)
                             if not prev_detected and curr_detected:
+                                # 저장된 이미지 파일로 API 전송
                                 send_api_alert(
                                     event_type="detection",
                                     roi_id=roi_id,
-                                    frame=result.annotated_frame,
+                                    image_path=saved_image_path,
                                 )
 
                             # 사람이 있었다가 없어진 경우 (부재 감지)
@@ -780,30 +861,36 @@ with tab_realtime:
                                 send_api_alert(
                                     event_type="absence",
                                     roi_id=roi_id,
-                                    frame=result.annotated_frame,
+                                    image_path=saved_image_path,
                                 )
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
 
                     if result.annotated_frame is not None:
-                        # BGR → RGB 변환
-                        frame_rgb = cv2.cvtColor(
-                            result.annotated_frame, cv2.COLOR_BGR2RGB
-                        )
-                        video_placeholder.image(
-                            frame_rgb, channels="RGB", width="stretch"
-                        )
+                        try:
+                            # 프레임 복사 후 BGR → RGB 변환 (캐시 안전성)
+                            frame_copy = result.annotated_frame.copy()
+                            frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+                            video_placeholder.image(
+                                frame_rgb, channels="RGB", width="stretch"
+                            )
+                        except Exception:
+                            pass  # 이미지 캐시 오류 무시
                 else:
                     # 시각화 프레임만 가져오기
                     frame = st.session_state.detection_engine.get_annotated_frame(
                         timeout=0.1
                     )
                     if frame is not None:
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        video_placeholder.image(
-                            frame_rgb, channels="RGB", width="stretch"
-                        )
+                        try:
+                            frame_copy = frame.copy()
+                            frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+                            video_placeholder.image(
+                                frame_rgb, channels="RGB", width="stretch"
+                            )
+                        except Exception:
+                            pass  # 이미지 캐시 오류 무시
                     else:
                         video_placeholder.info("⏳ 프레임 대기 중...")
         else:
@@ -860,17 +947,23 @@ with tab_realtime:
         else:
             st.text(f"활성 API: {enabled_count}개")
 
-            # 현재 프레임 가져오기
-            current_frame = None
-            if st.session_state.detection_engine:
-                current_frame = st.session_state.detection_engine.get_annotated_frame(
-                    timeout=0.01
-                )
+            # 저장된 최신 이미지 경로 가져오기
+            latest_image_path = None
+            if st.session_state.result_storage:
+                storage_info = st.session_state.result_storage.get_storage_info()
+                if storage_info["current_session"]:
+                    session_path = Path(storage_info["current_session"])
+                    # 최신 이미지 찾기
+                    images = sorted(session_path.glob("frame_*.jpg"))
+                    if images:
+                        latest_image_path = str(images[-1])
 
             col_btn1, col_btn2 = st.columns(2)
 
             with col_btn1:
-                if st.button("🧪 테스트 전송", help="현재 프레임으로 테스트 API 전송"):
+                if st.button(
+                    "🧪 테스트 전송", help="저장된 최신 이미지로 테스트 API 전송"
+                ):
                     # ROI가 있으면 첫 번째 ROI 사용
                     roi_id = "test_roi"
                     if st.session_state.detection_engine:
@@ -881,7 +974,7 @@ with tab_realtime:
                     result = send_api_alert(
                         event_type="manual_test",
                         roi_id=roi_id,
-                        frame=current_frame,
+                        image_path=latest_image_path,
                         force=True,
                     )
 
@@ -896,9 +989,10 @@ with tab_realtime:
                             st.error(f"❌ 전송 실패")
 
             with col_btn2:
-                if st.button("📋 결과 보기", help="마지막 API 전송 결과"):
-                    # API 테스트 탭으로 안내
-                    st.info("API 테스트 탭에서 상세 결과 확인")
+                if latest_image_path:
+                    st.caption(f"📷 {Path(latest_image_path).name}")
+                else:
+                    st.caption("📷 저장된 이미지 없음")
 
 
 # ============================================================
@@ -988,12 +1082,24 @@ with tab_browser:
                         type="primary",
                     ):
                         deleted_count = 0
+                        failed_sessions = []
+
                         for session_path in list(st.session_state.sessions_to_delete):
-                            if storage.delete_session(session_path):
+                            success, message = storage.delete_session(session_path)
+                            if success:
                                 deleted_count += 1
+                            else:
+                                failed_sessions.append((session_path, message))
 
                         st.session_state.sessions_to_delete = set()
-                        st.success(f"✅ {deleted_count}개 세션 삭제 완료!")
+
+                        if deleted_count > 0:
+                            st.success(f"✅ {deleted_count}개 세션 삭제 완료!")
+
+                        if failed_sessions:
+                            for path, msg in failed_sessions:
+                                st.error(f"❌ 삭제 실패: {Path(path).name} - {msg}")
+
                         st.rerun()
 
         st.divider()
@@ -1072,13 +1178,14 @@ with tab_browser:
                                 # 세션 삭제 버튼
                                 if selected_session:
                                     if st.button("🗑️ 세션 삭제", key="delete_session"):
-                                        if storage.delete_session(
+                                        success, message = storage.delete_session(
                                             selected_session["path"]
-                                        ):
-                                            st.success("세션이 삭제되었습니다")
+                                        )
+                                        if success:
+                                            st.success(f"✅ 세션 삭제됨: {message}")
                                             st.rerun()
                                         else:
-                                            st.error("삭제 실패")
+                                            st.error(f"❌ 삭제 실패: {message}")
 
         with col_grid:
             st.markdown("#### 🖼️ 이미지")
