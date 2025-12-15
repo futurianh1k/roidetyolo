@@ -105,8 +105,8 @@ def init_session_state():
             "sender_id": os.getenv("EMERGENCY_SENDER_ID", "streamlit-app"),
             "image_base_url": os.getenv("IMAGE_BASE_URL", ""),
             "fcm_project_id": os.getenv("FCM_PROJECT_ID", "emergency-alert-system"),
-            "api_send_on_absence": False,  # 부재 감지 시 API 전송
-            "api_send_on_detection": False,  # 사람 검출 시 API 전송
+            "api_send_on_absence": True,  # 부재 감지 시 API 전송 (기본: 활성화)
+            "api_send_on_detection": True,  # 사람 검출 시 API 전송 (기본: 활성화)
             # 부재 판단 설정
             "absence_threshold": 10,  # 연속 미검출 횟수 기준
         }
@@ -890,17 +890,17 @@ st.sidebar.caption(
 
 st.sidebar.markdown("---")
 
-# 사람 검출 시 API 전송
+# 사람 검출 시 API 전송 (기본: 활성화)
 config["api_send_on_detection"] = st.sidebar.checkbox(
-    "사람 검출 시 API 전송",
-    value=config.get("api_send_on_detection", False),
+    "✅ 사람 검출 시 API 전송",
+    value=config.get("api_send_on_detection", True),
     help="ROI 영역에서 사람이 나타나면 API 전송",
 )
 
-# 부재 감지 시 API 전송
+# 부재 감지 시 API 전송 (기본: 활성화)
 config["api_send_on_absence"] = st.sidebar.checkbox(
-    "부재 감지 시 API 전송",
-    value=config.get("api_send_on_absence", False),
+    "✅ 부재 감지 시 API 전송",
+    value=config.get("api_send_on_absence", True),
     help="ROI 영역에서 사람이 사라지면 API 전송",
 )
 
@@ -982,9 +982,10 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
     )
     new_api_type = st.selectbox(
         "타입",
-        ["json", "multipart"],
+        ["multipart", "json"],  # multipart를 기본값으로 (첫 번째)
+        index=0,  # multipart 선택
         key="new_api_type",
-        help="json: JSON 데이터 전송, multipart: 이미지 포함 전송",
+        help="multipart: 이미지 포함 전송 (권장), json: JSON 데이터만 전송",
     )
 
     if st.button("➕ API 추가", key="add_api_btn"):
@@ -1638,7 +1639,7 @@ with tab_api:
         # API 목록 구성 (Primary API 포함)
         available_apis = []
 
-        # 1. Primary API (base_url + watch_id)
+        # 1. Primary API (base_url + watch_id) - 기본 타입: multipart (이미지 첨부 지원)
         api_base_url = config.get("api_base_url", "")
         watch_id = config.get("watch_id", "")
         if api_base_url:
@@ -1649,7 +1650,7 @@ with tab_api:
                 {
                     "name": "✅ Primary API (Base URL + Watch ID)",
                     "url": primary_url,
-                    "type": "json",
+                    "type": "multipart",  # 기본 타입: multipart (이미지 첨부 지원)
                     "enabled": True,
                     "is_primary": True,
                 }
