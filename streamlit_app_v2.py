@@ -23,6 +23,9 @@ import requests
 from datetime import datetime
 from pathlib import Path
 
+# API endpoint persistence (SQLite)
+from api_endpoint_db import ApiEndpointDB
+
 # 로컬 모듈
 from video_source_manager import (
     VideoSourceManager,
@@ -115,6 +118,19 @@ def init_session_state():
             # 부재 판단 설정
             "absence_threshold": 10,  # 연속 미검출 횟수 기준
         }
+
+    # DB (API 엔드포인트/설정 영구 저장)
+    if "api_db" not in st.session_state:
+        db_path = os.getenv(
+            "STREAMLIT_API_DB_PATH",
+            os.path.join(os.path.dirname(__file__), "streamlit_api.db"),
+        )
+        st.session_state.api_db = ApiEndpointDB(db_path=db_path)
+        st.session_state.api_db.init()
+
+    # 마지막 검출 결과 (상태 패널 표시용)
+    if "last_detection_result" not in st.session_state:
+        st.session_state.last_detection_result = None
 
     # API 테스트 상태
     if "test_api_response" not in st.session_state:
@@ -292,21 +308,40 @@ def generate_note_message(
     person_count = len(detections)
 
     # 얼굴 분석 결과가 없는 경우
-    if not face_results or len(face_results) == 0:
+    if not face_results:
         if person_count == 1:
             return "사람이 검출 되었습니다"
         else:
             return f"사람 {person_count}명이 검출 되었습니다"
 
     # 얼굴 분석 결과가 있는 경우 - 표정 추출
+    # face_results 형태 호환:
+    # - DetectionEngine: Dict[tuple, Dict[str, Any]] (result["expression"] = {expression, confidence})
+    # - Storage/Browser: List[{"expression": "...", "expression_confidence": 0.0~1.0}, ...]
     expressions = []
-    for bbox_tuple, result in face_results.items():
-        expr_info = result.get("expression", {})
-        if isinstance(expr_info, dict):
-            expression = expr_info.get("expression", "")
-            confidence = expr_info.get("confidence", 0)
-            if expression and confidence > 0.3:  # 신뢰도 30% 이상
-                # 영어 표정을 한글로 변환
+    if isinstance(face_results, dict):
+        for _bbox_tuple, result in face_results.items():
+            expr_info = (result or {}).get("expression", {}) or {}
+            if isinstance(expr_info, dict):
+                expression = expr_info.get("expression", "")
+                confidence = float(expr_info.get("confidence", 0) or 0)
+                if expression and confidence > 0.3:  # 신뢰도 30% 이상
+                    # 영어 표정을 한글로 변환
+                    expression_kr = {
+                        "happy": "행복",
+                        "sad": "슬픔",
+                        "angry": "분노",
+                        "surprise": "놀람",
+                        "fear": "두려움",
+                        "disgust": "혐오",
+                        "neutral": "무표정",
+                    }.get(str(expression).lower(), expression)
+                    expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
+    elif isinstance(face_results, list):
+        for face in face_results:
+            expression = (face or {}).get("expression", "")
+            confidence = float((face or {}).get("expression_confidence", 0) or 0)
+            if expression and confidence > 0.3:
                 expression_kr = {
                     "happy": "행복",
                     "sad": "슬픔",
@@ -315,7 +350,7 @@ def generate_note_message(
                     "fear": "두려움",
                     "disgust": "혐오",
                     "neutral": "무표정",
-                }.get(expression.lower(), expression)
+                }.get(str(expression).lower(), expression)
                 expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
 
     if expressions:
@@ -561,6 +596,56 @@ def send_api_alert(
 # ============================================================
 
 init_session_state()
+
+
+def _ensure_api_defaults_and_load_from_db():
+    """
+    - 기존 세션이 이미 config를 갖고 있더라도, 값이 비어있으면 기본값으로 채움
+    - DB에 저장된 base_url/watch_id 및 엔드포인트 목록을 로드하여 config에 반영
+    """
+    config = st.session_state.config
+    api_db: ApiEndpointDB = st.session_state.api_db
+
+    # 1) DB에 값이 있으면 우선 적용
+    db_base_url = api_db.get_kv("api_base_url")
+    db_watch_id = api_db.get_kv("watch_id")
+    db_sender_id = api_db.get_kv("sender_id")
+    db_send_on_absence = api_db.get_kv("api_send_on_absence")
+    db_send_on_detection = api_db.get_kv("api_send_on_detection")
+
+    if db_base_url is not None:
+        config["api_base_url"] = db_base_url
+    if db_watch_id is not None:
+        config["watch_id"] = db_watch_id
+    if db_sender_id is not None:
+        config["sender_id"] = db_sender_id
+    if db_send_on_absence is not None:
+        config["api_send_on_absence"] = db_send_on_absence == "1"
+    if db_send_on_detection is not None:
+        config["api_send_on_detection"] = db_send_on_detection == "1"
+
+    # 2) 그래도 비어있다면(초기 실행/이전 세션), 기본값 주입
+    if not config.get("api_base_url"):
+        config["api_base_url"] = "https://lukus.store/emergency/api/emergency/quick"
+    if not config.get("watch_id"):
+        config["watch_id"] = "watch_1764653561585_7956"
+
+    # 3) 엔드포인트 로드 (DB가 우선)
+    endpoints = api_db.list_endpoints()
+    config["api_endpoints"] = [
+        {
+            "id": e["id"],
+            "name": e["name"],
+            "url": e["url"],
+            "enabled": bool(e["enabled"]),
+            "method": e.get("method", "POST"),
+            "type": e.get("type", "multipart"),
+        }
+        for e in endpoints
+    ]
+
+
+_ensure_api_defaults_and_load_from_db()
 
 
 # ============================================================
@@ -851,6 +936,7 @@ st.sidebar.divider()
 st.sidebar.subheader("🌐 API 설정")
 
 config = st.session_state.config
+api_db: ApiEndpointDB = st.session_state.api_db
 
 # API Base URL
 config["api_base_url"] = st.sidebar.text_input(
@@ -858,6 +944,7 @@ config["api_base_url"] = st.sidebar.text_input(
     config.get("api_base_url", ""),
     help="API 기본 URL (예: http://server:8080/api/emergency)",
 )
+api_db.set_kv("api_base_url", config.get("api_base_url", ""))
 
 # Watch ID
 config["watch_id"] = st.sidebar.text_input(
@@ -865,6 +952,7 @@ config["watch_id"] = st.sidebar.text_input(
     config.get("watch_id", ""),
     help="워치 ID - API URL에 자동 추가됨",
 )
+api_db.set_kv("watch_id", config.get("watch_id", ""))
 
 # 최종 API URL 표시
 if config["api_base_url"] and config["watch_id"]:
@@ -877,6 +965,7 @@ config["sender_id"] = st.sidebar.text_input(
     config.get("sender_id", "streamlit-app"),
     help="발신자 ID",
 )
+api_db.set_kv("sender_id", config.get("sender_id", ""))
 
 # 부재 판단 기준 슬라이더
 st.sidebar.markdown("---")
@@ -901,6 +990,7 @@ config["api_send_on_detection"] = st.sidebar.checkbox(
     value=config.get("api_send_on_detection", True),
     help="ROI 영역에서 사람이 나타나면 API 전송",
 )
+api_db.set_kv("api_send_on_detection", "1" if config["api_send_on_detection"] else "0")
 
 # 부재 감지 시 API 전송 (기본: 활성화)
 config["api_send_on_absence"] = st.sidebar.checkbox(
@@ -908,6 +998,7 @@ config["api_send_on_absence"] = st.sidebar.checkbox(
     value=config.get("api_send_on_absence", True),
     help="ROI 영역에서 사람이 사라지면 API 전송",
 )
+api_db.set_kv("api_send_on_absence", "1" if config["api_send_on_absence"] else "0")
 
 # 고급 설정
 with st.sidebar.expander("🔧 고급 API 설정", expanded=False):
@@ -929,6 +1020,7 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
         config["api_endpoints"] = []
 
     api_endpoints = config["api_endpoints"]
+    api_db: ApiEndpointDB = st.session_state.api_db
 
     if api_endpoints:
         st.markdown("**📋 등록된 API**")
@@ -939,11 +1031,15 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
             if st.button("✅ 전체 활성", key="api_all_on"):
                 for ep in api_endpoints:
                     ep["enabled"] = True
+                    if ep.get("id"):
+                        api_db.update_endpoint(int(ep["id"]), enabled=True)
                 st.rerun()
         with col_all_off:
             if st.button("⬜ 전체 비활성", key="api_all_off"):
                 for ep in api_endpoints:
                     ep["enabled"] = False
+                    if ep.get("id"):
+                        api_db.update_endpoint(int(ep["id"]), enabled=False)
                 st.rerun()
 
         st.markdown("---")
@@ -957,6 +1053,8 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
                 help=endpoint.get("url", ""),
             )
             config["api_endpoints"][i]["enabled"] = enabled
+            if endpoint.get("id"):
+                api_db.update_endpoint(int(endpoint["id"]), enabled=enabled)
 
             col_info, col_del = st.columns([4, 1])
             with col_info:
@@ -965,6 +1063,8 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
                 )
             with col_del:
                 if st.button("🗑️", key=f"delete_api_{i}", help="삭제"):
+                    if endpoint.get("id"):
+                        api_db.delete_endpoint(int(endpoint["id"]))
                     config["api_endpoints"].pop(i)
                     st.rerun()
 
@@ -994,8 +1094,16 @@ with st.sidebar.expander("🔗 API 엔드포인트 관리", expanded=False):
     )
 
     if st.button("➕ API 추가", key="add_api_btn"):
+        new_id = api_db.insert_endpoint(
+            name=new_api_name,
+            url=new_api_url,
+            method="POST",
+            endpoint_type=new_api_type,
+            enabled=True,
+        )
         config["api_endpoints"].append(
             {
+                "id": new_id,
                 "name": new_api_name,
                 "url": new_api_url,
                 "enabled": True,
