@@ -15,6 +15,7 @@ YOLO ROI Person Detector - Streamlit App v2
 import streamlit as st
 import cv2
 import numpy as np
+import pandas as pd
 import time
 import uuid
 import os
@@ -138,6 +139,12 @@ def init_session_state():
     # ROI별 부재 API 전송 여부 (중복 전송 방지)
     if "absence_api_sent" not in st.session_state:
         st.session_state.absence_api_sent = {}  # {roi_id: bool}
+
+    # API 전송 이력 (최근 100개 유지)
+    if "api_history" not in st.session_state:
+        st.session_state.api_history = (
+            []
+        )  # [{timestamp, note, event_type, roi_id, status_code, success}]
 
 
 def initialize_engines():
@@ -516,6 +523,23 @@ def send_api_alert(
 
         results.append(result)
 
+        # API 전송 이력 저장 (각 엔드포인트별로)
+        history_entry = {
+            "timestamp": timestamp,
+            "event_type": event_type,
+            "roi_id": roi_id or "",
+            "note": note_message,
+            "endpoint_name": endpoint.get("name", "Unknown"),
+            "status_code": result.get("status_code"),
+            "success": result.get("success", False),
+            "error": result.get("error"),
+        }
+
+        # 세션 상태에 이력 추가 (최근 100개 유지)
+        if "api_history" in st.session_state:
+            st.session_state.api_history.insert(0, history_entry)
+            st.session_state.api_history = st.session_state.api_history[:100]
+
     # 전체 결과 반환
     success_count = sum(1 for r in results if r["success"])
     return {
@@ -523,6 +547,7 @@ def send_api_alert(
         "results": results,
         "total": len(results),
         "success_count": success_count,
+        "note": note_message,  # Note 메시지도 반환
     }
 
 
@@ -1226,6 +1251,87 @@ with tab_realtime:
 # ============================================================
 
 with tab_browser:
+    # 상단: API 전송 이력 표시
+    st.subheader("📡 API 전송 이력")
+
+    api_history = st.session_state.get("api_history", [])
+
+    if not api_history:
+        st.info("📭 아직 API 전송 이력이 없습니다")
+    else:
+        # 이력 개수 및 클리어 버튼
+        col_hist_info, col_hist_clear = st.columns([3, 1])
+        with col_hist_info:
+            st.caption(f"📊 최근 {len(api_history)}건의 전송 이력")
+        with col_hist_clear:
+            if st.button("🗑️ 이력 삭제", key="clear_api_history"):
+                st.session_state.api_history = []
+                st.rerun()
+
+        # 테이블 형태로 표시
+        # 데이터 준비
+        history_data = []
+        for h in api_history[:20]:  # 최근 20건만 표시
+            # 시간 포맷팅
+            try:
+                dt = datetime.fromisoformat(h.get("timestamp", ""))
+                time_str = dt.strftime("%H:%M:%S")
+            except:
+                time_str = "N/A"
+
+            # 상태 아이콘
+            if h.get("success"):
+                status_icon = "✅"
+            elif h.get("error") == "Timeout":
+                status_icon = "⏱️"
+            elif h.get("error") == "Connection Error":
+                status_icon = "🔌"
+            else:
+                status_icon = "❌"
+
+            status_code = h.get("status_code")
+            status_text = (
+                f"{status_icon} {status_code}"
+                if status_code
+                else f"{status_icon} {h.get('error', 'Error')}"
+            )
+
+            history_data.append(
+                {
+                    "시간": time_str,
+                    "이벤트": h.get("event_type", ""),
+                    "ROI": h.get("roi_id", ""),
+                    "메시지 (Note)": h.get("note", "")[:50]
+                    + ("..." if len(h.get("note", "")) > 50 else ""),
+                    "응답": status_text,
+                }
+            )
+
+        # DataFrame으로 표시
+        if history_data:
+            df = pd.DataFrame(history_data)
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "시간": st.column_config.TextColumn("시간", width="small"),
+                    "이벤트": st.column_config.TextColumn("이벤트", width="small"),
+                    "ROI": st.column_config.TextColumn("ROI", width="small"),
+                    "메시지 (Note)": st.column_config.TextColumn(
+                        "메시지 (Note)", width="large"
+                    ),
+                    "응답": st.column_config.TextColumn("응답", width="small"),
+                },
+            )
+
+        # 더 많은 이력이 있으면 안내
+        if len(api_history) > 20:
+            st.caption(f"💡 최근 20건만 표시됨 (전체 {len(api_history)}건)")
+
+    st.divider()
+
+    # 하단: 저장된 검출 결과 브라우저
     st.subheader("📁 저장된 검출 결과 브라우저")
 
     if st.session_state.result_storage is None:
