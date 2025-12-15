@@ -100,8 +100,13 @@ def init_session_state():
             "storage_max_mb": 100,
             # API 설정
             "api_endpoints": [],
-            "api_base_url": os.getenv("EMERGENCY_API_URL", ""),  # 기본 API URL
-            "watch_id": os.getenv("EMERGENCY_WATCH_ID", ""),
+            # 기본값은 운영에서 바로 쓸 수 있게 지정하되,
+            # 환경변수(EMERGENCY_API_URL/EMERGENCY_WATCH_ID)가 있으면 그것을 우선한다.
+            "api_base_url": os.getenv(
+                "EMERGENCY_API_URL",
+                "https://lukus.store/emergency/api/emergency/quick",
+            ),
+            "watch_id": os.getenv("EMERGENCY_WATCH_ID", "watch_1764653561585_7956"),
             "sender_id": os.getenv("EMERGENCY_SENDER_ID", "streamlit-app"),
             "image_base_url": os.getenv("IMAGE_BASE_URL", ""),
             "fcm_project_id": os.getenv("FCM_PROJECT_ID", "emergency-alert-system"),
@@ -1044,6 +1049,19 @@ with tab_realtime:
                 result = st.session_state.detection_engine.get_result(timeout=0.1)
 
                 if result is not None:
+                    # 상태 패널에서 참조할 수 있도록 마지막 결과 저장
+                    st.session_state.last_detection_result = {
+                        "timestamp": result.timestamp,
+                        "detections": result.detections,
+                        "face_results": result.face_results,
+                        "note_preview": generate_note_message(
+                            event_type="detection",
+                            roi_id="",
+                            detections=result.detections,
+                            face_results=result.face_results,
+                        ),
+                    }
+
                     # 검출 결과 저장 및 경로 받기
                     saved_image_path = save_detection_result(result)
 
@@ -1071,13 +1089,14 @@ with tab_realtime:
 
                                 # 사람이 없었다가 나타난 경우 (검출)
                                 if not prev_detected:
-                                    send_api_alert(
-                                        event_type="detection",
-                                        roi_id=roi_id,
-                                        image_path=saved_image_path,
-                                        detections=result.detections,
-                                        face_results=result.face_results,
-                                    )
+                                    if config.get("api_send_on_detection", True):
+                                        send_api_alert(
+                                            event_type="detection",
+                                            roi_id=roi_id,
+                                            image_path=saved_image_path,
+                                            detections=result.detections,
+                                            face_results=result.face_results,
+                                        )
                             else:
                                 # 사람이 검출되지 않은 경우 → 카운터 증가
                                 st.session_state.absence_counters[roi_id] += 1
@@ -1088,18 +1107,19 @@ with tab_realtime:
                                     >= absence_threshold
                                     and not st.session_state.absence_api_sent[roi_id]
                                 ):
-                                    send_api_alert(
-                                        event_type="absence",
-                                        roi_id=roi_id,
-                                        image_path=saved_image_path,
-                                        detections=None,  # 부재 시 검출 없음
-                                        face_results=None,
-                                    )
-                                    st.session_state.absence_api_sent[roi_id] = True
-                                    print(
-                                        f"[Absence] ROI {roi_id}: "
-                                        f"{st.session_state.absence_counters[roi_id]}회 연속 미검출 → API 전송"
-                                    )
+                                    if config.get("api_send_on_absence", True):
+                                        send_api_alert(
+                                            event_type="absence",
+                                            roi_id=roi_id,
+                                            image_path=saved_image_path,
+                                            detections=None,  # 부재 시 검출 없음
+                                            face_results=None,
+                                        )
+                                        st.session_state.absence_api_sent[roi_id] = True
+                                        print(
+                                            f"[Absence] ROI {roi_id}: "
+                                            f"{st.session_state.absence_counters[roi_id]}회 연속 미검출 → API 전송"
+                                        )
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
@@ -1175,6 +1195,40 @@ with tab_realtime:
 
         st.divider()
 
+        # 얼굴/표정 (마지막 검출 결과 기준)
+        st.caption("🙂 얼굴/표정")
+        last = st.session_state.get("last_detection_result")
+        if not last:
+            st.info("최근 검출 결과 없음")
+        else:
+            detections = last.get("detections") or []
+            face_results = last.get("face_results") or {}
+
+            # 사람 수
+            person_count = 0
+            for d in detections:
+                try:
+                    if d.get("class_name") == "person":
+                        person_count += 1
+                except Exception:
+                    pass
+            st.text(f"사람: {person_count}명")
+
+            # Note 미리보기(= API로 보낼 메시지 규칙과 동일)
+            st.text(f"Note: {last.get('note_preview', '')}")
+
+            # 표정 요약
+            expr_msg = generate_note_message(
+                event_type="detection",
+                roi_id="",
+                detections=detections,
+                face_results=face_results,
+            )
+            if expr_msg.startswith("감정 상태:"):
+                st.success(expr_msg)
+            else:
+                st.info(expr_msg)
+
         # 저장 상태
         if st.session_state.result_storage and st.session_state.save_detections:
             storage_info = st.session_state.result_storage.get_storage_info()
@@ -1192,7 +1246,9 @@ with tab_realtime:
 
         config = st.session_state.config
         api_endpoints = config.get("api_endpoints", [])
-        enabled_count = sum(1 for ep in api_endpoints if ep.get("enabled", True))
+        primary_ready = bool(config.get("api_base_url") and config.get("watch_id"))
+        enabled_extras = sum(1 for ep in api_endpoints if ep.get("enabled", True))
+        enabled_count = enabled_extras + (1 if primary_ready else 0)
 
         if enabled_count == 0:
             st.warning("활성화된 API 없음")
@@ -1687,7 +1743,7 @@ with tab_api:
             # 테스트 데이터
             test_watch_id = st.text_input(
                 "Watch ID",
-                config.get("watch_id", "test_watch_001"),
+                config.get("watch_id", "watch_1764653561585_7956"),
                 key="test_watch_id",
             )
             test_sender_id = st.text_input(
