@@ -1506,13 +1506,23 @@ with tab_browser:
                 col_select_all, col_delete_all = st.columns(2)
                 with col_select_all:
                     if st.button("☑️ 전체 선택"):
+                        # 선택 세트에 모든 세션 추가
                         st.session_state.sessions_to_delete = {
                             s["path"] for s in all_sessions
                         }
+                        # 모든 체크박스 위젯 상태도 업데이트
+                        for session in all_sessions:
+                            checkbox_key = f"session_check_{session['path']}"
+                            st.session_state[checkbox_key] = True
                         st.rerun()
                 with col_delete_all:
                     if st.button("⬜ 전체 해제"):
+                        # 선택 세트 비우기
                         st.session_state.sessions_to_delete = set()
+                        # 모든 체크박스 위젯 상태도 업데이트
+                        for session in all_sessions:
+                            checkbox_key = f"session_check_{session['path']}"
+                            st.session_state[checkbox_key] = False
                         st.rerun()
 
                 st.markdown("---")
@@ -1528,19 +1538,25 @@ with tab_browser:
                         try:
                             dt = datetime.fromisoformat(start_time)
                             time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except:
+                        except Exception:
                             time_str = session["session_id"]
                     else:
                         time_str = session["session_id"]
 
                     label = f"📂 {source_type} | {time_str} | {session['total_frames']}장 | {session['size_mb']}MB"
 
+                    # 현재 선택 상태 확인
                     is_selected = session_path in st.session_state.sessions_to_delete
-                    if st.checkbox(
+
+                    # 체크박스 렌더링 및 상태 업데이트
+                    current_value = st.checkbox(
                         label,
                         value=is_selected,
                         key=f"session_check_{session_path}",
-                    ):
+                    )
+
+                    # 체크박스 값에 따라 선택 상태 업데이트
+                    if current_value:
                         st.session_state.sessions_to_delete.add(session_path)
                     else:
                         st.session_state.sessions_to_delete.discard(session_path)
@@ -1563,9 +1579,14 @@ with tab_browser:
                             success, message = storage.delete_session(session_path)
                             if success:
                                 deleted_count += 1
+                                # 삭제된 세션의 체크박스 위젯 상태 제거
+                                checkbox_key = f"session_check_{session_path}"
+                                if checkbox_key in st.session_state:
+                                    del st.session_state[checkbox_key]
                             else:
                                 failed_sessions.append((session_path, message))
 
+                        # 선택 세트 초기화
                         st.session_state.sessions_to_delete = set()
 
                         if deleted_count > 0:
