@@ -907,6 +907,21 @@ config["sender_id"] = st.sidebar.text_input(
 )
 api_db.set_kv("sender_id", config.get("sender_id", ""))
 
+# 검출 판단 기준 슬라이더
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🔍 검출 판단 설정**")
+
+config["detection_threshold"] = st.sidebar.slider(
+    "검출 판단 기준 (연속 검출 횟수)",
+    min_value=1,
+    max_value=100,
+    value=config.get("detection_threshold", 10),
+    help="사람이 연속으로 N회 검출되면 재전송",
+)
+st.sidebar.caption(
+    f"💡 사람이 {config['detection_threshold']}회 연속 검출되면 검출 API 재전송"
+)
+
 # 부재 판단 기준 슬라이더
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔍 부재 판단 설정**")
@@ -916,10 +931,10 @@ config["absence_threshold"] = st.sidebar.slider(
     min_value=1,
     max_value=100,
     value=config.get("absence_threshold", 10),
-    help="사람이 연속으로 N회 검출되지 않으면 부재로 판단",
+    help="사람이 연속으로 N회 검출되지 않으면 재전송",
 )
 st.sidebar.caption(
-    f"💡 사람이 {config['absence_threshold']}회 연속 미검출되면 부재 API 전송"
+    f"💡 사람이 {config['absence_threshold']}회 연속 미검출되면 부재 API 재전송"
 )
 
 st.sidebar.markdown("---")
@@ -1115,6 +1130,7 @@ with tab_realtime:
 
                     # ROI 상태 변화 감지 및 API 전송
                     if result.roi_states:
+                        detection_threshold = config.get("detection_threshold", 10)
                         absence_threshold = config.get("absence_threshold", 10)
 
                         for roi_id, state in result.roi_states.items():
@@ -1127,8 +1143,6 @@ with tab_realtime:
                             # 카운터 초기화
                             if roi_id not in st.session_state.absence_counters:
                                 st.session_state.absence_counters[roi_id] = 0
-                            if roi_id not in st.session_state.absence_api_sent:
-                                st.session_state.absence_api_sent[roi_id] = False
                             if roi_id not in st.session_state.detection_counters:
                                 st.session_state.detection_counters[roi_id] = 0
 
@@ -1136,11 +1150,13 @@ with tab_realtime:
                             if curr_detected:
                                 # 부재 카운터 리셋
                                 st.session_state.absence_counters[roi_id] = 0
-                                st.session_state.absence_api_sent[roi_id] = False
 
-                                # 사람이 없었다가 나타난 경우 (첫 검출)
-                                if not prev_detected:
-                                    st.session_state.detection_counters[roi_id] = 1  # 첫 검출
+                                # 검출 카운터 증가
+                                st.session_state.detection_counters[roi_id] += 1
+                                detection_count = st.session_state.detection_counters[roi_id]
+
+                                # 첫 검출(카운터=1) 또는 N회 도달 시 API 전송
+                                if detection_count == 1 or detection_count >= detection_threshold:
                                     if config.get("api_send_on_detection", True):
                                         send_api_alert(
                                             event_type="detection",
@@ -1149,33 +1165,27 @@ with tab_realtime:
                                             detections=result.detections,
                                             face_results=result.face_results,
                                         )
-                                        print(f"[Detection] ROI {roi_id}: 첫 검출 → API 전송")
-                                else:
-                                    # 계속 검출 중 - 카운터 증가
-                                    st.session_state.detection_counters[roi_id] += 1
 
-                                    # 10회 이상 연속 검출 시 재전송
-                                    if st.session_state.detection_counters[roi_id] >= 10:
-                                        if config.get("api_send_on_detection", True):
-                                            send_api_alert(
-                                                event_type="detection",
-                                                roi_id=roi_id,
-                                                image_path=saved_image_path,
-                                                detections=result.detections,
-                                                face_results=result.face_results,
-                                            )
-                                            st.session_state.detection_counters[roi_id] = 0  # 카운터 리셋
+                                        # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
+                                        if detection_count >= detection_threshold:
+                                            st.session_state.detection_counters[roi_id] = 0
                                             print(
-                                                f"[Detection] ROI {roi_id}: 10회 연속 검출 → API 재전송"
+                                                f"[Detection] ROI {roi_id}: {detection_threshold}회 연속 검출 → API 재전송"
                                             )
+                                        else:
+                                            print(f"[Detection] ROI {roi_id}: 첫 검출 → API 전송")
+
                             else:
                                 # 사람이 검출되지 않은 경우
                                 # 검출 카운터 리셋
                                 st.session_state.detection_counters[roi_id] = 0
 
-                                # 사람이 있었다가 없어진 경우 (첫 미검출)
-                                if prev_detected:
-                                    st.session_state.absence_counters[roi_id] = 1  # 첫 미검출
+                                # 부재 카운터 증가
+                                st.session_state.absence_counters[roi_id] += 1
+                                absence_count = st.session_state.absence_counters[roi_id]
+
+                                # 첫 미검출(카운터=1) 또는 N회 도달 시 API 전송
+                                if absence_count == 1 or absence_count >= absence_threshold:
                                     if config.get("api_send_on_absence", True):
                                         send_api_alert(
                                             event_type="absence",
@@ -1184,25 +1194,15 @@ with tab_realtime:
                                             detections=None,  # 부재 시 검출 없음
                                             face_results=None,
                                         )
-                                        print(f"[Absence] ROI {roi_id}: 첫 미검출 → API 전송")
-                                else:
-                                    # 계속 미검출 중 - 카운터 증가
-                                    st.session_state.absence_counters[roi_id] += 1
 
-                                    # 10회 이상 연속 미검출 시 재전송
-                                    if st.session_state.absence_counters[roi_id] >= absence_threshold:
-                                        if config.get("api_send_on_absence", True):
-                                            send_api_alert(
-                                                event_type="absence",
-                                                roi_id=roi_id,
-                                                image_path=saved_image_path,
-                                                detections=None,  # 부재 시 검출 없음
-                                                face_results=None,
-                                            )
-                                            st.session_state.absence_counters[roi_id] = 0  # 카운터 리셋
+                                        # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
+                                        if absence_count >= absence_threshold:
+                                            st.session_state.absence_counters[roi_id] = 0
                                             print(
                                                 f"[Absence] ROI {roi_id}: {absence_threshold}회 연속 미검출 → API 재전송"
                                             )
+                                        else:
+                                            print(f"[Absence] ROI {roi_id}: 첫 미검출 → API 전송")
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
@@ -1252,6 +1252,7 @@ with tab_realtime:
 
         # ROI 상태
         st.caption("ROI 상태")
+        detection_threshold = config.get("detection_threshold", 10)
         absence_threshold = config.get("absence_threshold", 10)
 
         if st.session_state.detection_engine:
@@ -1263,8 +1264,8 @@ with tab_realtime:
 
                 if state["person_detected"]:
                     # 검출 상태 표시 (카운터 포함)
-                    progress = detection_count / 10  # 10회 기준
-                    st.success(f"✅ {roi_id}: 사람 감지 ({detection_count}/10)")
+                    progress = detection_count / detection_threshold
+                    st.success(f"✅ {roi_id}: 사람 감지 ({detection_count}/{detection_threshold})")
                     if detection_count > 0:
                         st.progress(min(progress, 1.0))
                 else:
