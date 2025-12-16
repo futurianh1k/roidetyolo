@@ -8,6 +8,9 @@ import json
 import uuid
 from datetime import datetime
 
+# API 전송 유틸리티 (통합 + 재시도 + 비동기)
+from api_utils import send_api_event
+
 
 def test_api_endpoint(api_url):
     """
@@ -43,59 +46,49 @@ def test_api_endpoint(api_url):
     # 테스트 1: Present 이벤트 전송
     print("\n📤 테스트 1: Present 이벤트 (status: 1)")
     print(f"데이터: {json.dumps(test_data_present, indent=2, ensure_ascii=False)}")
-    
-    try:
-        response = requests.post(
-            api_url,
-            json=test_data_present,
-            headers={'Content-Type': 'application/json'},
-            timeout=5
-        )
-        
-        print(f"\n응답 코드: {response.status_code}")
-        print(f"응답 내용: {response.text}")
-        
-        if response.status_code == 200 or response.status_code == 201:
-            print("✅ Present 이벤트 전송 성공!")
-        else:
-            print(f"⚠️  Present 이벤트 전송 실패: {response.status_code}")
-    
-    except requests.exceptions.ConnectionError:
-        print("❌ 연결 오류: 서버에 연결할 수 없습니다.")
-        print("   - API 엔드포인트 URL을 확인하세요.")
-        print("   - 서버가 실행 중인지 확인하세요.")
-    except requests.exceptions.Timeout:
-        print("❌ 타임아웃: 서버 응답이 없습니다.")
-    except Exception as e:
-        print(f"❌ 오류 발생: {e}")
+
+    # 🚀 통합 API 전송 함수 사용 (재시도 로직 포함)
+    result = send_api_event(
+        url=api_url,
+        event_data=test_data_present,
+        timeout=10,
+        retry_count=3,
+    )
+
+    print(f"\n응답 결과:")
+    print(f"  성공 여부: {result.get('success')}")
+    print(f"  상태 코드: {result.get('status_code')}")
+    print(f"  응답 내용: {result.get('response_text', '')[:200]}")
+
+    if result.get("success"):
+        print("✅ Present 이벤트 전송 성공!")
+    else:
+        error = result.get("error", "Unknown")
+        print(f"⚠️ Present 이벤트 전송 실패: {error}")
     
     # 테스트 2: Absent 이벤트 전송
     print("\n" + "=" * 60)
     print("\n📤 테스트 2: Absent 이벤트 (status: 0)")
     print(f"데이터: {json.dumps(test_data_absent, indent=2, ensure_ascii=False)}")
-    
-    try:
-        response = requests.post(
-            api_url,
-            json=test_data_absent,
-            headers={'Content-Type': 'application/json'},
-            timeout=5
-        )
-        
-        print(f"\n응답 코드: {response.status_code}")
-        print(f"응답 내용: {response.text}")
-        
-        if response.status_code == 200 or response.status_code == 201:
-            print("✅ Absent 이벤트 전송 성공!")
-        else:
-            print(f"⚠️  Absent 이벤트 전송 실패: {response.status_code}")
-    
-    except requests.exceptions.ConnectionError:
-        print("❌ 연결 오류: 서버에 연결할 수 없습니다.")
-    except requests.exceptions.Timeout:
-        print("❌ 타임아웃: 서버 응답이 없습니다.")
-    except Exception as e:
-        print(f"❌ 오류 발생: {e}")
+
+    # 🚀 통합 API 전송 함수 사용 (재시도 로직 포함)
+    result = send_api_event(
+        url=api_url,
+        event_data=test_data_absent,
+        timeout=10,
+        retry_count=3,
+    )
+
+    print(f"\n응답 결과:")
+    print(f"  성공 여부: {result.get('success')}")
+    print(f"  상태 코드: {result.get('status_code')}")
+    print(f"  응답 내용: {result.get('response_text', '')[:200]}")
+
+    if result.get("success"):
+        print("✅ Absent 이벤트 전송 성공!")
+    else:
+        error = result.get("error", "Unknown")
+        print(f"⚠️ Absent 이벤트 전송 실패: {error}")
     
     print("\n" + "=" * 60)
     print("\n💡 참고사항:")

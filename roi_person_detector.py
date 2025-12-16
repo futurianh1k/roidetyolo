@@ -15,6 +15,9 @@ from datetime import datetime
 from collections import defaultdict
 from ultralytics import YOLO
 
+# API 전송 유틸리티 (통합 + 재시도 + 비동기)
+from api_utils import send_api_event
+
 
 class ROIPersonDetector:
     def __init__(self, config_path='config.json'):
@@ -131,21 +134,20 @@ class ROIPersonDetector:
             print(f"\n📤 이벤트 전송: {roi_id}, {object_type}, {status}")
             print(f"   데이터: {json.dumps(event_data, indent=2, ensure_ascii=False)}")
             
-            # API 호출
-            response = requests.post(
-                self.api_endpoint,
-                json=event_data,
-                headers={'Content-Type': 'application/json'},
-                timeout=5
+            # 🚀 통합 API 전송 함수 사용 (재시도 로직 포함)
+            result = send_api_event(
+                url=self.api_endpoint,
+                event_data=event_data,
+                timeout=10,  # 5초 → 10초로 증가
+                retry_count=3,  # 재시도 3회
             )
-            
-            if response.status_code == 200 or response.status_code == 201:
-                print(f"✅ 이벤트 전송 성공: {response.status_code}")
+
+            if result.get("success"):
+                print(f"✅ 이벤트 전송 성공: HTTP {result.get('status_code')}")
             else:
-                print(f"⚠️  이벤트 전송 실패: {response.status_code} - {response.text}")
-        
-        except requests.exceptions.RequestException as e:
-            print(f"❌ API 호출 오류: {e}")
+                error = result.get("error", "Unknown")
+                print(f"⚠️ 이벤트 전송 실패: {error}")
+
         except Exception as e:
             print(f"❌ 예외 발생: {e}")
     
