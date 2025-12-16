@@ -18,6 +18,9 @@ import json
 # ROI 유틸리티 임포트
 from roi_utils import denormalize_rois
 
+# API 전송 유틸리티 (통합 + 재시도 + 비동기)
+from api_utils import send_api_event_async
+
 # 카메라 소스 관리자 임포트
 try:
     from camera_utils import CameraSourceManager, CameraSourceType
@@ -177,14 +180,14 @@ class RealtimeDetector:
         return False
 
     def send_realtime_api(self, roi_id, event_type, reason, frame=None):
-        """실시간 API 전송 (SAD 표정, 부재 상태) - 현재 스냅샷 이미지 포함"""
+        """실시간 API 전송 (리팩토링: api_utils 사용)"""
         if not self.api_enabled:
             return
 
         try:
             import uuid
-            import base64
-            from io import BytesIO
+            import tempfile
+            import os
 
             # UUID 생성
             event_id = str(uuid.uuid4())
@@ -197,8 +200,8 @@ class RealtimeDetector:
                 f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
             )
 
-            # API 페이로드 생성 (요청한 형식)
-            payload = {
+            # API 페이로드 생성
+            event_data = {
                 "eventId": event_id,
                 "fcmMessageId": fcm_message_id,
                 "imageUrl": None,
@@ -206,60 +209,63 @@ class RealtimeDetector:
                 "createdAt": datetime.now().isoformat(),
                 "watchId": self.config.get("watch_id", "unknown"),
                 "senderId": self.config.get("sender_id", "test-user"),
-                "note": self.config.get("note", "응급상황 메시지"),
+                "eventType": event_type,
+                "roiId": roi_id,
+                "note": reason,  # reason을 note로 사용
             }
 
             print(f"[RealtimeDetector] 🚨 실시간 API 전송: {roi_id} - {reason}")
 
-            # 이미지가 있으면 multipart/form-data로 전송
+            # 프레임이 있으면 임시 파일로 저장
+            temp_image_path = None
             if frame is not None:
-                # 프레임을 JPEG로 인코딩
-                _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                image_bytes = BytesIO(buffer.tobytes())
+                try:
+                    # 임시 파일 생성
+                    temp_fd, temp_image_path = tempfile.mkstemp(suffix=".jpg", prefix="realtime_")
+                    os.close(temp_fd)  # 파일 디스크립터 닫기
 
-                # Multipart form data 생성
-                files = {"image": ("snapshot.jpg", image_bytes, "image/jpeg")}
+                    # 프레임을 파일로 저장
+                    cv2.imwrite(temp_image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    print(f"[RealtimeDetector] 📷 임시 이미지 저장: {temp_image_path}")
+                except Exception as save_err:
+                    print(f"[RealtimeDetector] ⚠️ 이미지 저장 실패: {save_err}")
+                    temp_image_path = None
 
-                # Form data (JSON 데이터를 form field로)
-                form_data = {
-                    "eventId": payload["eventId"],
-                    "fcmMessageId": payload["fcmMessageId"],
-                    "status": payload["status"],
-                    "createdAt": payload["createdAt"],
-                    "watchId": payload["watchId"],
-                    "senderId": payload["senderId"],
-                    "note": payload["note"],
-                }
+            # 🚀 비동기 API 전송 (재시도 로직 포함)
+            future = send_api_event_async(
+                url=self.api_endpoint,
+                event_data=event_data,
+                image_path=temp_image_path,
+                timeout=10,
+                retry_count=3,
+                callback=lambda result: self._handle_api_response(result, temp_image_path)
+            )
 
-                # API 전송 (multipart/form-data)
-                response = requests.post(
-                    self.api_endpoint, data=form_data, files=files, timeout=10
-                )
-            else:
-                # 이미지 없으면 JSON으로 전송
-                response = requests.post(
-                    self.api_endpoint,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=10,
-                )
+            print(f"[RealtimeDetector] 📤 API 전송 시작 (비동기)")
 
-            if response.status_code in [200, 201]:
-                print(f"[RealtimeDetector] ✅ API 전송 성공: {response.status_code}")
-                print(f"[RealtimeDetector] 📤 전송된 데이터: {payload}")
-            else:
-                print(f"[RealtimeDetector] ⚠️ API 응답 오류: {response.status_code}")
-                print(f"[RealtimeDetector] 응답 내용: {response.text}")
-
-        except requests.exceptions.Timeout:
-            print(f"[RealtimeDetector] ⏱️ API 타임아웃")
-        except requests.exceptions.ConnectionError:
-            print(f"[RealtimeDetector] ❌ API 연결 실패")
         except Exception as e:
-            print(f"[RealtimeDetector] ❌ API 전송 오류: {e}")
-            import traceback
+            print(f"[RealtimeDetector] ❌ API 전송 준비 오류: {e}")
 
-            traceback.print_exc()
+    def _handle_api_response(self, result, temp_image_path=None):
+        """API 응답 처리 콜백"""
+        try:
+            if result.get("success"):
+                print(f"[RealtimeDetector] ✅ API 전송 성공: HTTP {result.get('status_code')}")
+            else:
+                error = result.get("error", "Unknown")
+                print(f"[RealtimeDetector] ⚠️ API 전송 실패: {error}")
+
+            # 임시 파일 삭제
+            if temp_image_path:
+                try:
+                    import os
+                    if os.path.exists(temp_image_path):
+                        os.remove(temp_image_path)
+                        print(f"[RealtimeDetector] 🗑️ 임시 파일 삭제: {temp_image_path}")
+                except Exception as del_err:
+                    print(f"[RealtimeDetector] ⚠️ 임시 파일 삭제 실패: {del_err}")
+        except Exception as e:
+            print(f"[RealtimeDetector] ⚠️ API 응답 처리 오류: {e}")
 
     def update_roi_state(self, roi_id, person_in_roi, frame=None):
         """ROI 상태 업데이트 및 API 이벤트 전송 판단"""

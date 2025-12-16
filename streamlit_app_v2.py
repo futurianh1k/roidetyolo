@@ -26,6 +26,9 @@ from pathlib import Path
 # API endpoint persistence (SQLite)
 from api_endpoint_db import ApiEndpointDB
 
+# API 전송 유틸리티 (통합 + 재시도 + 비동기)
+from api_utils import send_api_event_async, send_to_multiple_endpoints
+
 # 로컬 모듈
 from video_source_manager import (
     VideoSourceManager,
@@ -160,6 +163,10 @@ def init_session_state():
     # ROI별 부재 API 전송 여부 (중복 전송 방지)
     if "absence_api_sent" not in st.session_state:
         st.session_state.absence_api_sent = {}  # {roi_id: bool}
+
+    # ROI별 연속 검출 카운터 (10회마다 재전송용)
+    if "detection_counters" not in st.session_state:
+        st.session_state.detection_counters = {}  # {roi_id: count}
 
     # API 전송 이력 (최근 100개 유지)
     if "api_history" not in st.session_state:
@@ -372,7 +379,7 @@ def send_api_alert(
     face_results: dict = None,
 ) -> dict:
     """
-    API 알림 전송
+    API 알림 전송 (리팩토링: api_utils 사용)
 
     Args:
         event_type: 이벤트 타입 (absence, detection, manual_test 등)
@@ -386,7 +393,6 @@ def send_api_alert(
         dict: 전송 결과 {"success": bool, "results": list}
     """
     config = st.session_state.config
-    results = []
 
     # 이벤트 타입에 따른 전송 여부 확인 (force=True면 무시)
     if not force:
@@ -408,19 +414,16 @@ def send_api_alert(
     api_base_url = config.get("api_base_url", "")
 
     # API 엔드포인트 목록 구성
-    # 1. 기본 API: api_base_url + "/" + watch_id (있으면)
-    # 2. 추가 등록된 엔드포인트들
     api_endpoints = []
 
     # 기본 API URL (base_url + watch_id)
-    # 이미지 첨부를 위해 기본 타입을 multipart로 설정
     if api_base_url and watch_id:
         primary_url = f"{api_base_url.rstrip('/')}/{watch_id}"
         api_endpoints.append(
             {
                 "name": "Primary API",
                 "url": primary_url,
-                "type": "multipart",  # 이미지 첨부 지원을 위해 multipart 사용
+                "type": "multipart",
                 "enabled": True,
             }
         )
@@ -441,7 +444,7 @@ def send_api_alert(
     event_id = str(uuid.uuid4())
     timestamp = datetime.now().isoformat()
 
-    # 이미지 URL 생성 (설정에 따라)
+    # 이미지 URL 생성
     image_url = None
     image_base_url = config.get("image_base_url", os.getenv("IMAGE_BASE_URL", ""))
     if image_base_url:
@@ -452,124 +455,61 @@ def send_api_alert(
     fcm_project = config.get("fcm_project_id", "emergency-alert-system")
     fcm_message_id = f"projects/{fcm_project}/messages/{int(time.time() * 1000)}"
 
-    for endpoint in api_endpoints:
-        result = {
-            "endpoint": endpoint.get("name", "Unknown"),
-            "url": endpoint.get("url", ""),
-            "success": False,
-            "status_code": None,
-            "error": None,
+    # Note 메시지 생성
+    note_message = generate_note_message(
+        event_type=event_type,
+        roi_id=roi_id,
+        detections=detections,
+        face_results=face_results,
+    )
+
+    # 이벤트 데이터 구성
+    event_data = {
+        "eventId": event_id,
+        "fcmMessageId": fcm_message_id,
+        "imageUrl": image_url,
+        "status": "SENT",
+        "createdAt": timestamp,
+        "watchId": watch_id,
+        "senderId": sender_id,
+        "eventType": event_type,
+        "roiId": roi_id,
+        "note": note_message,
+    }
+
+    # 🚀 새로운 통합 API 전송 함수 사용 (비동기 + 재시도)
+    api_results = send_to_multiple_endpoints(
+        endpoints=api_endpoints,
+        event_data=event_data,
+        image_path=image_path,
+        timeout=10,  # 5초 → 10초로 증가
+        retry_count=3,  # 재시도 3회
+        async_mode=True,  # 비동기 전송 (빠름)
+    )
+
+    # 결과 변환 (기존 형식 호환)
+    results = []
+    for api_result in api_results:
+        endpoint_name = api_result["endpoint_name"]
+        result = api_result["result"]
+
+        formatted_result = {
+            "endpoint": endpoint_name,
+            "url": next((ep["url"] for ep in api_endpoints if ep["name"] == endpoint_name), ""),
+            "success": result.get("success", False),
+            "status_code": result.get("status_code"),
+            "response_text": result.get("response_text", ""),
+            "error": result.get("error"),
         }
+        results.append(formatted_result)
 
-        try:
-            api_url = endpoint["url"]
-
-            # watchId 치환
-            if "{watchId}" in api_url:
-                api_url = api_url.replace("{watchId}", watch_id)
-
-            # Note 메시지 생성 (검출 결과 기반)
-            note_message = generate_note_message(
-                event_type=event_type,
-                roi_id=roi_id,
-                detections=detections,
-                face_results=face_results,
-            )
-
-            if endpoint.get("type") == "json":
-                # JSON 방식 - 완전한 이벤트 데이터
-                event_data = {
-                    "eventId": event_id,
-                    "fcmMessageId": fcm_message_id,
-                    "imageUrl": image_url,
-                    "status": "SENT",
-                    "createdAt": timestamp,
-                    "watchId": watch_id,
-                    "senderId": sender_id,
-                    "eventType": event_type,
-                    "roiId": roi_id,
-                    "note": note_message,  # 동적 메시지 추가
-                }
-
-                response = requests.post(
-                    api_url,
-                    json=event_data,
-                    headers={"Content-Type": "application/json"},
-                    timeout=5,
-                )
-                result["request_data"] = event_data
-
-            else:
-                # Multipart 방식 - 이미지 첨부 지원
-                form_data = {
-                    "eventId": event_id,
-                    "senderId": sender_id,
-                    "watchId": watch_id,
-                    "eventType": event_type,
-                    "roiId": roi_id or "",
-                    "note": note_message,  # 동적 메시지 사용
-                    "createdAt": timestamp,
-                }
-
-                files = None
-                if image_path and os.path.exists(image_path):
-                    # 저장된 파일을 읽어서 전송 (안전하고 일관성 있음)
-                    try:
-                        with open(image_path, "rb") as f:
-                            image_data = f.read()
-                        filename = os.path.basename(image_path)
-                        files = {"image": (filename, image_data, "image/jpeg")}
-                        print(
-                            f"[API] 📷 이미지 첨부: {filename} ({len(image_data)} bytes)"
-                        )
-                    except Exception as read_err:
-                        print(f"[API] ⚠️ 이미지 파일 읽기 실패: {read_err}")
-                else:
-                    if image_path:
-                        print(f"[API] ⚠️ 이미지 파일 없음: {image_path}")
-                    else:
-                        print(f"[API] ⚠️ 이미지 경로 없음")
-
-                response = requests.post(
-                    api_url,
-                    data=form_data,
-                    files=files,
-                    timeout=5,
-                )
-                result["request_data"] = form_data
-                result["image_attached"] = files is not None
-
-            result["status_code"] = response.status_code
-            result["response_text"] = response.text[:500] if response.text else ""
-
-            if response.status_code in [200, 201]:
-                result["success"] = True
-                print(f"[API] ✅ 전송 성공: {endpoint['name']} ({event_type})")
-            else:
-                result["error"] = f"HTTP {response.status_code}"
-                print(
-                    f"[API] ⚠️ 전송 실패: {endpoint['name']} (Status: {response.status_code})"
-                )
-
-        except requests.exceptions.Timeout:
-            result["error"] = "Timeout"
-            print(f"[API] ⏱️ 타임아웃: {endpoint['name']}")
-        except requests.exceptions.ConnectionError:
-            result["error"] = "Connection Error"
-            print(f"[API] 🔌 연결 오류: {endpoint['name']}")
-        except Exception as e:
-            result["error"] = str(e)
-            print(f"[API] ❌ 전송 오류: {endpoint['name']} - {e}")
-
-        results.append(result)
-
-        # API 전송 이력 저장 (각 엔드포인트별로)
+        # API 전송 이력 저장
         history_entry = {
             "timestamp": timestamp,
             "event_type": event_type,
             "roi_id": roi_id or "",
             "note": note_message,
-            "endpoint_name": endpoint.get("name", "Unknown"),
+            "endpoint_name": endpoint_name,
             "status_code": result.get("status_code"),
             "success": result.get("success", False),
             "error": result.get("error"),
@@ -587,7 +527,7 @@ def send_api_alert(
         "results": results,
         "total": len(results),
         "success_count": success_count,
-        "note": note_message,  # Note 메시지도 반환
+        "note": note_message,
     }
 
 
@@ -1184,19 +1124,23 @@ with tab_realtime:
                             prev_detected = prev_state.get("person_detected", False)
                             curr_detected = state.get("person_detected", False)
 
-                            # 연속 미검출 카운터 관리
+                            # 카운터 초기화
                             if roi_id not in st.session_state.absence_counters:
                                 st.session_state.absence_counters[roi_id] = 0
                             if roi_id not in st.session_state.absence_api_sent:
                                 st.session_state.absence_api_sent[roi_id] = False
+                            if roi_id not in st.session_state.detection_counters:
+                                st.session_state.detection_counters[roi_id] = 0
 
-                            # 사람이 검출된 경우 → 카운터 리셋
+                            # 사람이 검출된 경우
                             if curr_detected:
+                                # 부재 카운터 리셋
                                 st.session_state.absence_counters[roi_id] = 0
                                 st.session_state.absence_api_sent[roi_id] = False
 
-                                # 사람이 없었다가 나타난 경우 (검출)
+                                # 사람이 없었다가 나타난 경우 (첫 검출)
                                 if not prev_detected:
+                                    st.session_state.detection_counters[roi_id] = 1  # 첫 검출
                                     if config.get("api_send_on_detection", True):
                                         send_api_alert(
                                             event_type="detection",
@@ -1205,16 +1149,33 @@ with tab_realtime:
                                             detections=result.detections,
                                             face_results=result.face_results,
                                         )
-                            else:
-                                # 사람이 검출되지 않은 경우 → 카운터 증가
-                                st.session_state.absence_counters[roi_id] += 1
+                                        print(f"[Detection] ROI {roi_id}: 첫 검출 → API 전송")
+                                else:
+                                    # 계속 검출 중 - 카운터 증가
+                                    st.session_state.detection_counters[roi_id] += 1
 
-                                # 연속 미검출 횟수가 기준에 도달하면 부재 API 전송
-                                if (
-                                    st.session_state.absence_counters[roi_id]
-                                    >= absence_threshold
-                                    and not st.session_state.absence_api_sent[roi_id]
-                                ):
+                                    # 10회 이상 연속 검출 시 재전송
+                                    if st.session_state.detection_counters[roi_id] >= 10:
+                                        if config.get("api_send_on_detection", True):
+                                            send_api_alert(
+                                                event_type="detection",
+                                                roi_id=roi_id,
+                                                image_path=saved_image_path,
+                                                detections=result.detections,
+                                                face_results=result.face_results,
+                                            )
+                                            st.session_state.detection_counters[roi_id] = 0  # 카운터 리셋
+                                            print(
+                                                f"[Detection] ROI {roi_id}: 10회 연속 검출 → API 재전송"
+                                            )
+                            else:
+                                # 사람이 검출되지 않은 경우
+                                # 검출 카운터 리셋
+                                st.session_state.detection_counters[roi_id] = 0
+
+                                # 사람이 있었다가 없어진 경우 (첫 미검출)
+                                if prev_detected:
+                                    st.session_state.absence_counters[roi_id] = 1  # 첫 미검출
                                     if config.get("api_send_on_absence", True):
                                         send_api_alert(
                                             event_type="absence",
@@ -1223,11 +1184,25 @@ with tab_realtime:
                                             detections=None,  # 부재 시 검출 없음
                                             face_results=None,
                                         )
-                                        st.session_state.absence_api_sent[roi_id] = True
-                                        print(
-                                            f"[Absence] ROI {roi_id}: "
-                                            f"{st.session_state.absence_counters[roi_id]}회 연속 미검출 → API 전송"
-                                        )
+                                        print(f"[Absence] ROI {roi_id}: 첫 미검출 → API 전송")
+                                else:
+                                    # 계속 미검출 중 - 카운터 증가
+                                    st.session_state.absence_counters[roi_id] += 1
+
+                                    # 10회 이상 연속 미검출 시 재전송
+                                    if st.session_state.absence_counters[roi_id] >= absence_threshold:
+                                        if config.get("api_send_on_absence", True):
+                                            send_api_alert(
+                                                event_type="absence",
+                                                roi_id=roi_id,
+                                                image_path=saved_image_path,
+                                                detections=None,  # 부재 시 검출 없음
+                                                face_results=None,
+                                            )
+                                            st.session_state.absence_counters[roi_id] = 0  # 카운터 리셋
+                                            print(
+                                                f"[Absence] ROI {roi_id}: {absence_threshold}회 연속 미검출 → API 재전송"
+                                            )
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
@@ -1284,22 +1259,24 @@ with tab_realtime:
 
             for roi_id, state in roi_states.items():
                 absence_count = st.session_state.absence_counters.get(roi_id, 0)
-                api_sent = st.session_state.absence_api_sent.get(roi_id, False)
+                detection_count = st.session_state.detection_counters.get(roi_id, 0)
 
                 if state["person_detected"]:
-                    st.success(f"✅ {roi_id}: 사람 감지")
+                    # 검출 상태 표시 (카운터 포함)
+                    progress = detection_count / 10  # 10회 기준
+                    st.success(f"✅ {roi_id}: 사람 감지 ({detection_count}/10)")
+                    if detection_count > 0:
+                        st.progress(min(progress, 1.0))
                 else:
                     # 미검출 상태 표시 (카운터 포함)
-                    if api_sent:
-                        st.error(
-                            f"🚨 {roi_id}: 부재 ({absence_count}/{absence_threshold})"
-                        )
-                    else:
-                        progress = absence_count / absence_threshold
+                    progress = absence_count / absence_threshold
+                    if absence_count > 0:
                         st.warning(
                             f"⏳ {roi_id}: 미검출 ({absence_count}/{absence_threshold})"
                         )
                         st.progress(min(progress, 1.0))
+                    else:
+                        st.info(f"ℹ️ {roi_id}: 대기 중")
 
         st.divider()
 
