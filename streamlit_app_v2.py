@@ -335,13 +335,14 @@ def generate_note_message(
                 if expression and confidence > 0.3:  # 신뢰도 30% 이상
                     # 영어 표정을 한글로 변환
                     expression_kr = {
-                        "happy": "행복",
-                        "sad": "슬픔",
-                        "angry": "분노",
-                        "surprise": "놀람",
-                        "fear": "두려움",
-                        "disgust": "혐오",
-                        "neutral": "무표정",
+                        "happy": "고통 미검출",
+                        "sad": "고통 검출됨",  # "슬픔",
+                        "angry": "고통 검출됨",  # "분노",
+                        "surprise": "고통 미검출",
+                        "fear": "고통 검출됨",  # "두려움",
+                        "disgust": "고통 검출됨",  # "혐오",
+                        "pain": "고통 검출됨",  # "혐오", #LUKUS 추가
+                        "neutral": "고통 미검출",
                     }.get(str(expression).lower(), expression)
                     expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
     elif isinstance(face_results, list):
@@ -350,21 +351,22 @@ def generate_note_message(
             confidence = float((face or {}).get("expression_confidence", 0) or 0)
             if expression and confidence > 0.3:
                 expression_kr = {
-                    "happy": "행복",
-                    "sad": "슬픔",
-                    "angry": "분노",
-                    "surprise": "놀람",
-                    "fear": "두려움",
-                    "disgust": "혐오",
-                    "neutral": "무표정",
+                    "happy": "고통 미검출",
+                    "sad": "고통 검출됨",  # "슬픔",
+                    "angry": "고통 검출됨",  # "분노",
+                    "pain": "고통 검출됨",  # "혐오", #LUKUS 추가
+                    "surprise": "고통 미검출",
+                    "fear": "고통 검출됨",  # "두려움",
+                    "disgust": "고통 검출됨",  # "혐오",
+                    "neutral": "고통 미검출",
                 }.get(str(expression).lower(), expression)
                 expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
 
     if expressions:
         if len(expressions) == 1:
-            return f"감정 상태: {expressions[0]}"
+            return f"환자 얼굴 고통 감지: {expressions[0]}"
         else:
-            return f"감정 상태: {', '.join(expressions)}"
+            return f"환자 얼굴 고통 감지: {', '.join(expressions)}"
     else:
         # 얼굴은 검출되었지만 표정 분류가 안된 경우
         return "사람이 검출 되었습니다 (표정 분석 불가)"
@@ -495,7 +497,9 @@ def send_api_alert(
 
         formatted_result = {
             "endpoint": endpoint_name,
-            "url": next((ep["url"] for ep in api_endpoints if ep["name"] == endpoint_name), ""),
+            "url": next(
+                (ep["url"] for ep in api_endpoints if ep["name"] == endpoint_name), ""
+            ),
             "success": result.get("success", False),
             "status_code": result.get("status_code"),
             "response_text": result.get("response_text", ""),
@@ -1153,10 +1157,15 @@ with tab_realtime:
 
                                 # 검출 카운터 증가
                                 st.session_state.detection_counters[roi_id] += 1
-                                detection_count = st.session_state.detection_counters[roi_id]
+                                detection_count = st.session_state.detection_counters[
+                                    roi_id
+                                ]
 
                                 # 첫 검출(카운터=1) 또는 N회 도달 시 API 전송
-                                if detection_count == 1 or detection_count >= detection_threshold:
+                                if (
+                                    detection_count == 1
+                                    or detection_count >= detection_threshold
+                                ):
                                     if config.get("api_send_on_detection", True):
                                         send_api_alert(
                                             event_type="detection",
@@ -1168,12 +1177,16 @@ with tab_realtime:
 
                                         # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
                                         if detection_count >= detection_threshold:
-                                            st.session_state.detection_counters[roi_id] = 0
+                                            st.session_state.detection_counters[
+                                                roi_id
+                                            ] = 0
                                             print(
                                                 f"[Detection] ROI {roi_id}: {detection_threshold}회 연속 검출 → API 재전송"
                                             )
                                         else:
-                                            print(f"[Detection] ROI {roi_id}: 첫 검출 → API 전송")
+                                            print(
+                                                f"[Detection] ROI {roi_id}: 첫 검출 → API 전송"
+                                            )
 
                             else:
                                 # 사람이 검출되지 않은 경우
@@ -1182,10 +1195,15 @@ with tab_realtime:
 
                                 # 부재 카운터 증가
                                 st.session_state.absence_counters[roi_id] += 1
-                                absence_count = st.session_state.absence_counters[roi_id]
+                                absence_count = st.session_state.absence_counters[
+                                    roi_id
+                                ]
 
                                 # 첫 미검출(카운터=1) 또는 N회 도달 시 API 전송
-                                if absence_count == 1 or absence_count >= absence_threshold:
+                                if (
+                                    absence_count == 1
+                                    or absence_count >= absence_threshold
+                                ):
                                     if config.get("api_send_on_absence", True):
                                         send_api_alert(
                                             event_type="absence",
@@ -1197,12 +1215,16 @@ with tab_realtime:
 
                                         # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
                                         if absence_count >= absence_threshold:
-                                            st.session_state.absence_counters[roi_id] = 0
+                                            st.session_state.absence_counters[
+                                                roi_id
+                                            ] = 0
                                             print(
                                                 f"[Absence] ROI {roi_id}: {absence_threshold}회 연속 미검출 → API 재전송"
                                             )
                                         else:
-                                            print(f"[Absence] ROI {roi_id}: 첫 미검출 → API 전송")
+                                            print(
+                                                f"[Absence] ROI {roi_id}: 첫 미검출 → API 전송"
+                                            )
 
                         # 상태 업데이트
                         st.session_state.prev_roi_states = result.roi_states.copy()
@@ -1265,7 +1287,9 @@ with tab_realtime:
                 if state["person_detected"]:
                     # 검출 상태 표시 (카운터 포함)
                     progress = detection_count / detection_threshold
-                    st.success(f"✅ {roi_id}: 사람 감지 ({detection_count}/{detection_threshold})")
+                    st.success(
+                        f"✅ {roi_id}: 사람 감지 ({detection_count}/{detection_threshold})"
+                    )
                     if detection_count > 0:
                         st.progress(min(progress, 1.0))
                 else:
