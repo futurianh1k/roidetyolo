@@ -91,6 +91,12 @@ def init_session_state():
     if "current_source" not in st.session_state:
         st.session_state.current_source = None
 
+    if "current_source_options" not in st.session_state:
+        st.session_state.current_source_options = {}
+
+    if "last_source_retry_ts" not in st.session_state:
+        st.session_state.last_source_retry_ts = 0.0
+
     # 카메라 목록
     if "available_cameras" not in st.session_state:
         st.session_state.available_cameras = []
@@ -232,6 +238,8 @@ def change_source(source_type: str, source, **options):
 
     st.session_state.current_source_type = source_type
     st.session_state.current_source = source
+    st.session_state.current_source_options = dict(options) if options else {}
+    st.session_state.last_source_retry_ts = time.time()
 
     # 저장 세션 관리
     if st.session_state.result_storage:
@@ -244,6 +252,41 @@ def change_source(source_type: str, source, **options):
             st.session_state.result_storage.start_session(source_type, source_name)
 
     return True
+
+
+def ensure_active_source_connection():
+    """페이지 새로고침 등으로 끊어진 USB/비디오 소스를 자동 복구"""
+    manager = st.session_state.source_manager
+    if manager is None or st.session_state.current_source_type in (None, "none"):
+        return
+
+    stats = manager.get_stats()
+    if stats.get("source_connected"):
+        return
+
+    # 소스 정보가 없으면 복구 불가
+    if (
+        st.session_state.current_source is None
+        and st.session_state.current_source_type != "http_post"
+    ):
+        return
+
+    now = time.time()
+    # 너무 잦은 재시도를 막기 위한 간격(2초)
+    if now - st.session_state.last_source_retry_ts < 2.0:
+        return
+
+    options = st.session_state.current_source_options or {}
+    config = create_source_config(
+        st.session_state.current_source_type,
+        st.session_state.current_source,
+        **options,
+    )
+    manager.change_source(config)
+    st.session_state.last_source_retry_ts = now
+    print(
+        f"[App] 🔄 소스 복구 시도: {st.session_state.current_source_type} - {st.session_state.current_source}"
+    )
 
 
 def update_roi_regions(roi_regions):
@@ -282,6 +325,20 @@ def save_detection_result(result) -> str:
     )
 
     return saved_path
+
+
+def has_face_detections(face_results) -> bool:
+    """얼굴 분석 결과가 존재하는지 여부"""
+    if not face_results:
+        return False
+
+    if isinstance(face_results, dict):
+        return any(bool(entry) for entry in face_results.values())
+
+    if isinstance(face_results, list):
+        return any(bool(entry) for entry in face_results)
+
+    return False
 
 
 def generate_note_message(
@@ -651,6 +708,9 @@ def _ensure_api_defaults_and_load_from_db():
 
 _ensure_api_defaults_and_load_from_db()
 
+if st.session_state.engines_initialized:
+    ensure_active_source_connection()
+
 
 # ============================================================
 # 사이드바 - 설정
@@ -857,6 +917,10 @@ confidence = st.sidebar.slider(
     step=0.05,
 )
 st.session_state.config["confidence_threshold"] = confidence
+if st.session_state.detection_engine:
+    st.session_state.detection_engine.update_runtime_settings(
+        confidence_threshold=confidence
+    )
 
 # 검출 간격 (10초~60초 선택 가능)
 interval_options = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0]
@@ -887,6 +951,10 @@ interval_idx = st.sidebar.select_slider(
     format_func=lambda i: interval_labels[interval_options[i]],
 )
 st.session_state.config["detection_interval"] = interval_options[interval_idx]
+if st.session_state.detection_engine:
+    st.session_state.detection_engine.update_runtime_settings(
+        detection_interval=st.session_state.config["detection_interval"]
+    )
 
 # 얼굴 분석
 face_analysis = st.sidebar.checkbox(
@@ -894,6 +962,10 @@ face_analysis = st.sidebar.checkbox(
     value=st.session_state.config["enable_face_analysis"],
 )
 st.session_state.config["enable_face_analysis"] = face_analysis
+if st.session_state.detection_engine:
+    st.session_state.detection_engine.update_runtime_settings(
+        enable_face_analysis=face_analysis
+    )
 
 st.sidebar.divider()
 
@@ -979,7 +1051,7 @@ config["detection_threshold"] = st.sidebar.slider(
     "검출 판단 기준 (연속 검출 횟수)",
     min_value=1,
     max_value=100,
-    value=config.get("detection_threshold", 10),
+    value=config.get("detection_threshold", 300),
     help="사람이 연속으로 N회 검출되면 재전송",
 )
 st.sidebar.caption(
@@ -994,7 +1066,7 @@ config["absence_threshold"] = st.sidebar.slider(
     "부재 판단 기준 (연속 미검출 횟수)",
     min_value=1,
     max_value=100,
-    value=config.get("absence_threshold", 10),
+    value=config.get("absence_threshold", 300),
     help="사람이 연속으로 N회 검출되지 않으면 재전송",
 )
 st.sidebar.caption(
@@ -1194,8 +1266,9 @@ with tab_realtime:
 
                     # ROI 상태 변화 감지 및 API 전송
                     if result.roi_states:
-                        detection_threshold = config.get("detection_threshold", 10)
-                        absence_threshold = config.get("absence_threshold", 10)
+                        face_available = has_face_detections(result.face_results)
+                        detection_threshold = config.get("detection_threshold", 100)
+                        absence_threshold = config.get("absence_threshold", 100)
 
                         for roi_id, state in result.roi_states.items():
                             prev_state = st.session_state.prev_roi_states.get(
@@ -1227,26 +1300,31 @@ with tab_realtime:
                                     or detection_count >= detection_threshold
                                 ):
                                     if config.get("api_send_on_detection", True):
-                                        send_api_alert(
-                                            event_type="detection",
-                                            roi_id=roi_id,
-                                            image_path=saved_image_path,
-                                            detections=result.detections,
-                                            face_results=result.face_results,
-                                        )
-
-                                        # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
-                                        if detection_count >= detection_threshold:
-                                            st.session_state.detection_counters[
-                                                roi_id
-                                            ] = 0
+                                        if not face_available:
                                             print(
-                                                f"[Detection] ROI {roi_id}: {detection_threshold}회 연속 검출 → API 재전송"
+                                                f"[Detection] ROI {roi_id}: 얼굴 미검출 → API 전송 생략"
                                             )
                                         else:
-                                            print(
-                                                f"[Detection] ROI {roi_id}: 첫 검출 → API 전송"
+                                            send_api_alert(
+                                                event_type="detection",
+                                                roi_id=roi_id,
+                                                image_path=saved_image_path,
+                                                detections=result.detections,
+                                                face_results=result.face_results,
                                             )
+
+                                            # N회 도달 시 카운터 리셋 (다음에 다시 1부터 시작)
+                                            if detection_count >= detection_threshold:
+                                                st.session_state.detection_counters[
+                                                    roi_id
+                                                ] = 0
+                                                print(
+                                                    f"[Detection] ROI {roi_id}: {detection_threshold}회 연속 검출 → API 재전송"
+                                                )
+                                            else:
+                                                print(
+                                                    f"[Detection] ROI {roi_id}: 첫 검출 → API 전송"
+                                                )
 
                             else:
                                 # 사람이 검출되지 않은 경우
@@ -1334,8 +1412,8 @@ with tab_realtime:
 
         # ROI 상태
         st.caption("ROI 상태")
-        detection_threshold = config.get("detection_threshold", 10)
-        absence_threshold = config.get("absence_threshold", 10)
+        detection_threshold = config.get("detection_threshold", 100)
+        absence_threshold = config.get("absence_threshold", 100)
 
         if st.session_state.detection_engine:
             roi_states = st.session_state.detection_engine.get_roi_states()

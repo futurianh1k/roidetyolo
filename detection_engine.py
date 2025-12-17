@@ -194,6 +194,8 @@ class DetectionEngine:
             "current_fps": 0,
         }
 
+        self._settings_lock = threading.Lock()
+
         # FPS 계산용
         self._fps_start_time = time.time()
         self._fps_frame_count = 0
@@ -285,6 +287,52 @@ class DetectionEngine:
     def get_stats(self) -> Dict[str, Any]:
         """통계 반환"""
         return self.stats.copy()
+
+    def update_runtime_settings(
+        self,
+        confidence_threshold: Optional[float] = None,
+        detection_interval: Optional[float] = None,
+        enable_face_analysis: Optional[bool] = None,
+    ) -> bool:
+        """
+        런타임 설정 업데이트 (스트림릿 슬라이더/체크박스 즉시 반영)
+
+        Returns:
+            bool: 실제로 변경이 적용되었는지 여부
+        """
+        updated = False
+
+        with self._settings_lock:
+            if confidence_threshold is not None:
+                if abs(confidence_threshold - self.confidence_threshold) > 1e-6:
+                    self.confidence_threshold = confidence_threshold
+                    updated = True
+
+            if detection_interval is not None:
+                new_interval = max(0.1, float(detection_interval))
+                if abs(new_interval - self.detection_interval) > 1e-6:
+                    self.detection_interval = new_interval
+                    updated = True
+
+            if enable_face_analysis is not None:
+                desired = bool(enable_face_analysis) and FACE_ANALYZER_AVAILABLE
+                if desired and not self.enable_face_analysis:
+                    try:
+                        self.face_analyzer = FaceAnalyzer()
+                        self.enable_face_analysis = True
+                        updated = True
+                        print("[DetectionEngine] ✅ 얼굴 분석 재활성화")
+                    except Exception as exc:
+                        self.enable_face_analysis = False
+                        self.face_analyzer = None
+                        print(f"[DetectionEngine] ⚠️ 얼굴 분석 활성화 실패: {exc}")
+                elif not desired and self.enable_face_analysis:
+                    self.enable_face_analysis = False
+                    self.face_analyzer = None
+                    updated = True
+                    print("[DetectionEngine] ⏸ 얼굴 분석 비활성화")
+
+        return updated
 
     def _detection_loop(self):
         """검출 루프 (스레드)"""
