@@ -305,7 +305,7 @@ def generate_note_message(
     메시지 규칙:
         1. 사람 미검출: "사람이 검출되지 않습니다"
         2. 사람 검출, 얼굴 미검출: "사람이 검출 되었습니다"
-        3. 사람 검출, 얼굴 검출, 표정 분류됨: "감정 상태: {표정}"
+        3. 사람 검출, 얼굴 검출, 표정 분류됨: "환자 얼굴 고통 감지: {표정}"
     """
     # 검출이 없는 경우 (absence 이벤트)
     if event_type == "absence" or not detections or len(detections) == 0:
@@ -321,14 +321,20 @@ def generate_note_message(
         else:
             return f"사람 {person_count}명이 검출 되었습니다"
 
-    # 얼굴 분석 결과가 있는 경우 - 표정 추출
+    # 얼굴 분석 결과가 있는 경우 - 표정 및 머리 움직임 추출
     # face_results 형태 호환:
     # - DetectionEngine: Dict[tuple, Dict[str, Any]] (result["expression"] = {expression, confidence})
     # - Storage/Browser: List[{"expression": "...", "expression_confidence": 0.0~1.0}, ...]
     expressions = []
+    pain_signals = []  # 고통 신호 (머리 움직임, 찡그림)
+
     if isinstance(face_results, dict):
         for _bbox_tuple, result in face_results.items():
-            expr_info = (result or {}).get("expression", {}) or {}
+            if not result:
+                continue
+
+            # 표정 분석
+            expr_info = result.get("expression", {}) or {}
             if isinstance(expr_info, dict):
                 expression = expr_info.get("expression", "")
                 confidence = float(expr_info.get("confidence", 0) or 0)
@@ -341,20 +347,44 @@ def generate_note_message(
                         "surprise": "고통 미검출",
                         "fear": "고통 검출됨",  # "두려움",
                         "disgust": "고통 검출됨",  # "혐오",
-                        "pain": "고통 검출됨",  # "혐오", #LUKUS 추가
+                        "pain": "고통 검출됨",  # LUKUS 추가
                         "neutral": "고통 미검출",
                     }.get(str(expression).lower(), expression)
                     expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
+
+            # 머리 움직임 분석 (face_analyzer에서 새로 추가된 기능)
+            head_motion = result.get("head_motion", {})
+            if head_motion:
+                if head_motion.get("head_shake"):
+                    pain_signals.append("머리 흔듦(도리도리)")
+                if head_motion.get("sharp_movement"):
+                    pain_signals.append("급격한 머리 움직임")
+
+            # 찡그림 분석
+            grimace = result.get("grimace", {})
+            if grimace and grimace.get("is_grimacing"):
+                conf = grimace.get("grimace_confidence", 0)
+                pain_signals.append(f"찡그림({conf*100:.0f}%)")
+
+            # 종합 고통 지표
+            if result.get("pain_indicators"):
+                if "고통 신호 감지" not in pain_signals:
+                    pain_signals.append("고통 신호 감지")
+
     elif isinstance(face_results, list):
         for face in face_results:
-            expression = (face or {}).get("expression", "")
-            confidence = float((face or {}).get("expression_confidence", 0) or 0)
+            if not face:
+                continue
+
+            # 표정 분석
+            expression = face.get("expression", "")
+            confidence = float(face.get("expression_confidence", 0) or 0)
             if expression and confidence > 0.3:
                 expression_kr = {
                     "happy": "고통 미검출",
                     "sad": "고통 검출됨",  # "슬픔",
                     "angry": "고통 검출됨",  # "분노",
-                    "pain": "고통 검출됨",  # "혐오", #LUKUS 추가
+                    "pain": "고통 검출됨",  # LUKUS 추가
                     "surprise": "고통 미검출",
                     "fear": "고통 검출됨",  # "두려움",
                     "disgust": "고통 검출됨",  # "혐오",
@@ -362,14 +392,44 @@ def generate_note_message(
                 }.get(str(expression).lower(), expression)
                 expressions.append(f"{expression_kr}({confidence*100:.0f}%)")
 
+            # 머리 움직임 분석 (저장된 결과에서)
+            head_motion = face.get("head_motion", {})
+            if head_motion:
+                if head_motion.get("head_shake"):
+                    pain_signals.append("머리 흔듦(도리도리)")
+                if head_motion.get("sharp_movement"):
+                    pain_signals.append("급격한 머리 움직임")
+
+            # 찡그림 분석
+            grimace = face.get("grimace", {})
+            if grimace and grimace.get("is_grimacing"):
+                conf = grimace.get("grimace_confidence", 0)
+                pain_signals.append(f"찡그림({conf*100:.0f}%)")
+
+    # 메시지 생성
+    messages = []
+
+    # 표정 기반 메시지
     if expressions:
         if len(expressions) == 1:
-            return f"환자 얼굴 고통 감지: {expressions[0]}"
+            messages.append(f"표정: {expressions[0]}")
         else:
-            return f"환자 얼굴 고통 감지: {', '.join(expressions)}"
-    else:
-        # 얼굴은 검출되었지만 표정 분류가 안된 경우
+            messages.append(f"표정: {', '.join(expressions)}")
+
+    # 머리 움직임/고통 신호 메시지
+    if pain_signals:
+        # 중복 제거
+        unique_signals = list(dict.fromkeys(pain_signals))
+        messages.append(f"고통 신호: {', '.join(unique_signals)}")
+
+    # 최종 메시지 조합
+    if messages:
+        return f"환자 고통 감지 - {'; '.join(messages)}"
+    elif face_results:
+        # 얼굴은 검출되었지만 표정/고통 분류가 안된 경우
         return "사람이 검출 되었습니다 (표정 분석 불가)"
+    else:
+        return "사람이 검출 되었습니다"
 
 
 def send_api_alert(

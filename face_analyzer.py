@@ -4,9 +4,17 @@
 - 입 상태 검출 (MAR - Mouth Aspect Ratio)
 - 표정 분석
 - 인공호흡기/마스크 검출
+- 머리 움직임 감지 (도리도리, 급격한 움직임)
+
+참고자료:
+- MediaPipe Face Mesh: https://google.github.io/mediapipe/solutions/face_mesh.html
+- Head Pose Estimation: solvePnP 기반 3D 회전 추정
+- 머리 움직임 분석 알고리즘: 각속도/각가속도 기반 이상 움직임 감지
 """
 
 import cv2
+import math
+import time
 import numpy as np
 from collections import deque
 
@@ -72,10 +80,68 @@ class FaceAnalyzer:
         self.ear_buffer = deque(maxlen=5)
         self.mar_buffer = deque(maxlen=5)
 
+        # ===== 머리 움직임 감지 설정 =====
+        # Head pose estimation용 랜드마크 인덱스
+        # 코, 턱, 좌/우 눈꼬리, 좌/우 입꼬리 (6개 점)
+        self.HEAD_POSE_LANDMARKS = [
+            1,
+            33,
+            263,
+            61,
+            291,
+            199,
+        ]  # nose, left eye, right eye, left mouth, right mouth, chin
+
+        # 머리 움직임 감지 임계값 (튜닝 가능)
+        self.YAW_AMPLITUDE_DEG = self.config.get(
+            "yaw_amplitude_deg", 15.0
+        )  # 도리도리 최소 진폭
+        self.HEAD_MOTION_WINDOW_SEC = self.config.get(
+            "head_motion_window_sec", 2.0
+        )  # 분석 창 길이(초)
+        self.VELOCITY_SPIKE_DEG_PER_S = self.config.get(
+            "velocity_spike_deg_per_s", 120.0
+        )  # 급격한 움직임 각속도 임계
+        self.ACCEL_SPIKE_DEG_PER_S2 = self.config.get(
+            "accel_spike_deg_per_s2", 1000.0
+        )  # 가속도 스파이크 임계
+        self.HEAD_MOTION_FPS = self.config.get("head_motion_fps", 15.0)  # 처리 FPS 추정
+
+        # 머리 움직임 시계열 버퍼 (yaw, pitch, roll + 타임스탬프)
+        maxlen_head = int(self.HEAD_MOTION_WINDOW_SEC * self.HEAD_MOTION_FPS) + 10
+        self.yaw_buffer = deque(maxlen=maxlen_head)
+        self.pitch_buffer = deque(maxlen=maxlen_head)
+        self.roll_buffer = deque(maxlen=maxlen_head)
+        self.head_time_buffer = deque(maxlen=maxlen_head)
+
+        # 베이스라인 학습용 (처음 N프레임)
+        self.baseline_frames = 30
+        self.baseline_yaw = None
+        self.baseline_pitch = None
+        self.baseline_roll = None
+        self.frame_count = 0
+
+        # 3D 모델 포인트 (일반적인 얼굴 비율 기반)
+        # 참고: https://github.com/google/mediapipe/issues/1879
+        self.model_points_3d = np.array(
+            [
+                (0.0, 0.0, 0.0),  # Nose tip (index 1)
+                (-225.0, 170.0, -135.0),  # Left eye left corner (index 33)
+                (225.0, 170.0, -135.0),  # Right eye right corner (index 263)
+                (-150.0, -150.0, -125.0),  # Left mouth corner (index 61)
+                (150.0, -150.0, -125.0),  # Right mouth corner (index 291)
+                (0.0, -330.0, -65.0),  # Chin (index 199)
+            ],
+            dtype=np.float64,
+        )
+
         print("[FaceAnalyzer] 초기화 완료")
         print(f"  - EAR Threshold: {self.EAR_THRESHOLD}")
         print(f"  - MAR Speak Threshold: {self.MAR_SPEAK_THRESHOLD}")
         print(f"  - MAR Open Threshold: {self.MAR_OPEN_THRESHOLD}")
+        print(f"  - Head Motion Detection: Enabled")
+        print(f"    - Yaw Amplitude: {self.YAW_AMPLITUDE_DEG}°")
+        print(f"    - Velocity Spike: {self.VELOCITY_SPIKE_DEG_PER_S}°/s")
 
     def calculate_ear(self, landmarks, eye_indices):
         """
@@ -133,6 +199,262 @@ class FaceAnalyzer:
         mar = (A + B + C) / (3.0 * D + 1e-6)
 
         return mar
+
+    def estimate_head_pose(self, landmarks, img_w, img_h):
+        """
+        Head Pose 추정 (solvePnP 기반)
+
+        3D 모델 포인트와 2D 이미지 포인트를 이용해 머리의 회전(yaw, pitch, roll)을 계산
+
+        Args:
+            landmarks: MediaPipe 랜드마크
+            img_w: 이미지 너비
+            img_h: 이미지 높이
+
+        Returns:
+            tuple: (yaw, pitch, roll) in degrees, or None if failed
+        """
+        # 2D 이미지 포인트 추출
+        image_points = np.array(
+            [
+                (landmarks[1].x * img_w, landmarks[1].y * img_h),  # Nose tip
+                (landmarks[33].x * img_w, landmarks[33].y * img_h),  # Left eye corner
+                (
+                    landmarks[263].x * img_w,
+                    landmarks[263].y * img_h,
+                ),  # Right eye corner
+                (landmarks[61].x * img_w, landmarks[61].y * img_h),  # Left mouth corner
+                (
+                    landmarks[291].x * img_w,
+                    landmarks[291].y * img_h,
+                ),  # Right mouth corner
+                (landmarks[199].x * img_w, landmarks[199].y * img_h),  # Chin
+            ],
+            dtype=np.float64,
+        )
+
+        # 카메라 매트릭스 (근사값)
+        focal_length = img_w
+        center = (img_w / 2, img_h / 2)
+        camera_matrix = np.array(
+            [[focal_length, 0, center[0]], [0, focal_length, center[1]], [0, 0, 1]],
+            dtype=np.float64,
+        )
+
+        # 렌즈 왜곡 계수 (0으로 가정)
+        dist_coeffs = np.zeros((4, 1))
+
+        try:
+            # solvePnP로 회전/이동 벡터 계산
+            success, rotation_vector, translation_vector = cv2.solvePnP(
+                self.model_points_3d,
+                image_points,
+                camera_matrix,
+                dist_coeffs,
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
+
+            if not success:
+                return None
+
+            # 회전 벡터 → 회전 행렬 → 오일러 각
+            rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+
+            # 오일러 각 계산 (XYZ 순서)
+            sy = math.sqrt(rotation_matrix[0, 0] ** 2 + rotation_matrix[1, 0] ** 2)
+            singular = sy < 1e-6
+
+            if not singular:
+                x = math.atan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
+                y = math.atan2(-rotation_matrix[2, 0], sy)
+                z = math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+            else:
+                x = math.atan2(-rotation_matrix[1, 2], rotation_matrix[1, 1])
+                y = math.atan2(-rotation_matrix[2, 0], sy)
+                z = 0
+
+            # 라디안 → 도
+            pitch = math.degrees(x)  # 상하 (고개 끄덕임)
+            yaw = math.degrees(y)  # 좌우 (고개 돌림)
+            roll = math.degrees(z)  # 기울기 (고개 기울임)
+
+            return yaw, pitch, roll
+
+        except Exception as e:
+            # solvePnP 실패 시
+            return None
+
+    def estimate_head_pose_simple(self, landmarks, img_w, img_h):
+        """
+        간단한 Head Pose 추정 (랜드마크 기반)
+
+        solvePnP 없이 눈 중심-코 벡터로 yaw 근사 계산
+
+        Args:
+            landmarks: MediaPipe 랜드마크
+            img_w: 이미지 너비
+            img_h: 이미지 높이
+
+        Returns:
+            tuple: (yaw, pitch, roll) in degrees
+        """
+        # 눈 중심 계산
+        left_eye_center = np.array(
+            [
+                np.mean([landmarks[i].x for i in self.LEFT_EYE]) * img_w,
+                np.mean([landmarks[i].y for i in self.LEFT_EYE]) * img_h,
+                np.mean([landmarks[i].z for i in self.LEFT_EYE]) * img_w,
+            ]
+        )
+        right_eye_center = np.array(
+            [
+                np.mean([landmarks[i].x for i in self.RIGHT_EYE]) * img_w,
+                np.mean([landmarks[i].y for i in self.RIGHT_EYE]) * img_h,
+                np.mean([landmarks[i].z for i in self.RIGHT_EYE]) * img_w,
+            ]
+        )
+        eyes_mid = (left_eye_center + right_eye_center) / 2.0
+
+        # 코 위치
+        nose_pt = np.array(
+            [landmarks[1].x * img_w, landmarks[1].y * img_h, landmarks[1].z * img_w]
+        )
+
+        # 눈 중심 → 코 벡터
+        vec = nose_pt - eyes_mid
+
+        # Yaw 근사: x 성분 기반
+        yaw = math.degrees(math.atan2(vec[0], vec[2] + 1e-6))
+
+        # Pitch 근사: y 성분 기반
+        pitch = math.degrees(math.atan2(vec[1], vec[2] + 1e-6))
+
+        # Roll 근사: 눈 사이 기울기
+        eye_diff = right_eye_center - left_eye_center
+        roll = math.degrees(math.atan2(eye_diff[1], eye_diff[0] + 1e-6))
+
+        return yaw, pitch, roll
+
+    def analyze_head_motion(self):
+        """
+        머리 움직임 시계열 분석
+
+        Returns:
+            dict: {
+                'head_shake': bool,      # 도리도리 감지
+                'sharp_movement': bool,  # 급격한 움직임 감지
+                'yaw_amplitude': float,  # yaw 진폭(도)
+                'max_velocity': float,   # 최대 각속도(°/s)
+                'max_acceleration': float,  # 최대 각가속도(°/s²)
+            }
+        """
+        result = {
+            "head_shake": False,
+            "sharp_movement": False,
+            "yaw_amplitude": 0.0,
+            "max_velocity": 0.0,
+            "max_acceleration": 0.0,
+        }
+
+        if len(self.yaw_buffer) < 5:
+            return result
+
+        yaws = np.array(self.yaw_buffer)
+        times = np.array(self.head_time_buffer)
+
+        # 베이스라인 보정
+        if self.baseline_yaw is not None:
+            yaws = yaws - self.baseline_yaw
+
+        # 진폭 (peak-to-peak)
+        amplitude = np.ptp(yaws)
+        result["yaw_amplitude"] = float(amplitude)
+
+        # 피크 수 계산 (부호 변화 횟수)
+        dy = np.diff(yaws)
+        if len(dy) >= 2:
+            sign_changes = np.sum((dy[:-1] * dy[1:]) < 0)
+        else:
+            sign_changes = 0
+
+        # 도리도리 판정: 진폭 >= 임계값 AND 피크 >= 2
+        result["head_shake"] = amplitude >= self.YAW_AMPLITUDE_DEG and sign_changes >= 2
+
+        # 각속도 계산
+        dt = np.diff(times)
+        dt = np.where(dt < 1e-6, 1e-6, dt)  # 0 나누기 방지
+        ang_vel = np.abs(np.diff(yaws) / dt)  # °/s
+
+        if len(ang_vel) > 0:
+            max_vel = np.max(ang_vel)
+            result["max_velocity"] = float(max_vel)
+
+            # 각가속도 계산
+            if len(ang_vel) > 1:
+                ang_acc = np.abs(np.diff(ang_vel) / dt[1:])
+                max_acc = np.max(ang_acc) if len(ang_acc) > 0 else 0.0
+                result["max_acceleration"] = float(max_acc)
+            else:
+                max_acc = 0.0
+
+            # 급격한 움직임 판정
+            result["sharp_movement"] = (
+                max_vel >= self.VELOCITY_SPIKE_DEG_PER_S
+                or max_acc >= self.ACCEL_SPIKE_DEG_PER_S2
+            )
+
+        return result
+
+    def analyze_grimace(self, landmarks):
+        """
+        찡그림(고통 표정) 검출
+
+        눈썹 사이 거리 감소, 눈 주변 변화 등으로 고통 신호 판별
+
+        Args:
+            landmarks: MediaPipe 랜드마크
+
+        Returns:
+            dict: {
+                'is_grimacing': bool,
+                'eyebrow_distance': float,
+                'grimace_confidence': float
+            }
+        """
+        # 눈썹 내측 랜드마크 (눈썹 사이)
+        left_inner_eyebrow = landmarks[107]  # 왼쪽 눈썹 안쪽
+        right_inner_eyebrow = landmarks[336]  # 오른쪽 눈썹 안쪽
+
+        # 눈썹 사이 거리
+        eyebrow_dist = math.sqrt(
+            (right_inner_eyebrow.x - left_inner_eyebrow.x) ** 2
+            + (right_inner_eyebrow.y - left_inner_eyebrow.y) ** 2
+        )
+
+        # 눈썹 높이 (눈 대비)
+        left_eyebrow_y = np.mean([landmarks[i].y for i in self.LEFT_EYEBROW])
+        right_eyebrow_y = np.mean([landmarks[i].y for i in self.RIGHT_EYEBROW])
+        left_eye_y = np.mean([landmarks[i].y for i in self.LEFT_EYE])
+        right_eye_y = np.mean([landmarks[i].y for i in self.RIGHT_EYE])
+
+        eyebrow_lowered = (left_eye_y - left_eyebrow_y) < 0.025 or (
+            right_eye_y - right_eyebrow_y
+        ) < 0.025
+
+        # 찡그림 판정
+        is_grimacing = eyebrow_dist < 0.08 and eyebrow_lowered
+
+        # 신뢰도 계산
+        if is_grimacing:
+            confidence = min(0.9, (0.1 - eyebrow_dist) * 10)
+        else:
+            confidence = 0.0
+
+        return {
+            "is_grimacing": is_grimacing,
+            "eyebrow_distance": float(eyebrow_dist),
+            "grimace_confidence": float(confidence),
+        }
 
     def detect_mask_or_ventilator(self, frame, face_bbox):
         """
@@ -367,6 +689,48 @@ class FaceAnalyzer:
         # 마스크/호흡기 검출
         has_device, device_conf = self.detect_mask_or_ventilator(frame, face_bbox_abs)
 
+        # ===== 머리 움직임 분석 =====
+        img_h, img_w = person_crop.shape[:2]
+
+        # Head pose 추정 (solvePnP 우선, 실패 시 간단한 방식 사용)
+        head_pose = self.estimate_head_pose(face_landmarks.landmark, img_w, img_h)
+        if head_pose is None:
+            head_pose = self.estimate_head_pose_simple(
+                face_landmarks.landmark, img_w, img_h
+            )
+
+        yaw, pitch, roll = head_pose
+        current_time = time.time()
+
+        # 베이스라인 학습 (첫 N 프레임)
+        self.frame_count += 1
+        if self.frame_count <= self.baseline_frames:
+            self.yaw_buffer.append(yaw)
+            self.pitch_buffer.append(pitch)
+            self.roll_buffer.append(roll)
+            self.head_time_buffer.append(current_time)
+
+            if self.frame_count == self.baseline_frames:
+                self.baseline_yaw = np.mean(self.yaw_buffer)
+                self.baseline_pitch = np.mean(self.pitch_buffer)
+                self.baseline_roll = np.mean(self.roll_buffer)
+        else:
+            # 버퍼에 추가
+            self.yaw_buffer.append(yaw)
+            self.pitch_buffer.append(pitch)
+            self.roll_buffer.append(roll)
+            self.head_time_buffer.append(current_time)
+
+        # 머리 움직임 분석
+        head_motion = self.analyze_head_motion()
+
+        # 찡그림 분석
+        grimace = self.analyze_grimace(face_landmarks.landmark)
+
+        # 이상 움직임 종합 판단
+        abnormal_motion = head_motion["head_shake"] or head_motion["sharp_movement"]
+        pain_indicators = grimace["is_grimacing"] or expression["expression"] == "pain"
+
         return {
             "face_detected": True,
             "face_bbox": face_bbox_abs,
@@ -379,6 +743,16 @@ class FaceAnalyzer:
             "device_confidence": float(device_conf),
             "landmarks": face_landmarks,
             "num_faces": len(results.multi_face_landmarks),
+            # 머리 움직임 관련 결과
+            "head_pose": {
+                "yaw": float(yaw),
+                "pitch": float(pitch),
+                "roll": float(roll),
+            },
+            "head_motion": head_motion,
+            "grimace": grimace,
+            "abnormal_motion": abnormal_motion,
+            "pain_indicators": pain_indicators,
         }
 
     def draw_face_analysis(self, frame, face_result):
@@ -411,6 +785,23 @@ class FaceAnalyzer:
             info_lines.append(
                 f"Mask/Vent: Yes ({face_result['device_confidence']:.2f})"
             )
+
+        # 머리 움직임 정보 표시
+        if "head_pose" in face_result:
+            pose = face_result["head_pose"]
+            info_lines.append(
+                f"Head: Y={pose['yaw']:.1f} P={pose['pitch']:.1f} R={pose['roll']:.1f}"
+            )
+
+        if "head_motion" in face_result:
+            motion = face_result["head_motion"]
+            if motion["head_shake"]:
+                info_lines.append("⚠️ HEAD SHAKE (도리도리)")
+            if motion["sharp_movement"]:
+                info_lines.append("⚠️ SHARP MOVEMENT (급격)")
+
+        if face_result.get("pain_indicators"):
+            info_lines.append("🔴 PAIN INDICATORS")
 
         # 텍스트 배경 (반투명)
         text_y = y1 - 10
